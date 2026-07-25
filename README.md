@@ -41,7 +41,7 @@ python3 scripts/etapa-3-integracion-corpusintegrado
 python3 scripts/etapa-4-distribucion-por-estado
 ```
 
-La etapa 2 genera cuatro archivos Excel: un corpus maestro y tres libros por categoría. Extrae páginas, metadatos PDF, título legible, fuente del título, estado de texto extraíble, extracto y SHA-256. Cuando el PDF no trae título interno, se infiere desde el texto o desde el nombre del archivo y se registra en `Fuente Titulo`. Cuando se ejecuta por estado, el Excel incluye bibliografía común, normativa federal común y documentos estatales del usuario para que coincida con las fuentes preparadas para NotebookLM.
+La etapa 2 genera cuatro archivos Excel: un inventario maestro y tres libros por categoría. Incluye documentos PDF y hojas de cálculo cargadas en Drive. Para PDFs extrae páginas, metadatos, título legible, fuente del título, estado de texto extraíble, extracto y SHA-256. Cuando el PDF no trae título interno, se infiere desde el texto o desde el nombre del archivo y se registra en `Fuente Titulo`. La columna `Ruta Drive` registra la ruta original en Drive, y `Ruta Local` queda solo como trazabilidad operativa. Cuando se ejecuta por estado, el Excel incluye bibliografía común, normativa federal común y documentos estatales del usuario para que coincida con las fuentes preparadas para NotebookLM.
 
 ## Procesamiento por estado
 

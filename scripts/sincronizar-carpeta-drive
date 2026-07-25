@@ -78,7 +78,7 @@ def listar_archivos_recursivo(service, parent_id, carpeta_path=""):
             results = service.files().list(
                 q=query,
                 spaces='drive',
-            fields='files(id, name, mimeType, size, modifiedTime, md5Checksum)',
+            fields='files(id, name, mimeType, size, modifiedTime, md5Checksum, webViewLink)',
                 pageSize=1000,
                 pageToken=page_token
             ).execute()
@@ -101,7 +101,8 @@ def listar_archivos_recursivo(service, parent_id, carpeta_path=""):
                         'size': int(item.get('size', 0)),
                         'mimeType': item.get('mimeType', ''),
                         'modifiedTime': item.get('modifiedTime'),
-                        'md5Checksum': item.get('md5Checksum')
+                        'md5Checksum': item.get('md5Checksum'),
+                        'webViewLink': item.get('webViewLink', ''),
                     })
             
             page_token = results.get('nextPageToken')
@@ -205,9 +206,21 @@ def sincronizar_carpeta(carpeta_nombre):
         rel_path = str(drive_local_path(archivo['path'], archivo['id']))
         
         dest = FASP_LOCAL / rel_path
-        version = {"id": archivo["id"], "size": archivo["size"], "modifiedTime": archivo.get("modifiedTime"), "md5Checksum": archivo.get("md5Checksum")}
-        if dest.exists() and versions.get(archivo["id"]) == version:
+        version = {
+            "id": archivo["id"],
+            "name": archivo["name"],
+            "path": archivo["path"],
+            "size": archivo["size"],
+            "mimeType": archivo.get("mimeType"),
+            "modifiedTime": archivo.get("modifiedTime"),
+            "md5Checksum": archivo.get("md5Checksum"),
+            "webViewLink": archivo.get("webViewLink", ""),
+        }
+        previous = versions.get(archivo["id"], {})
+        same_content = all(previous.get(key) == version.get(key) for key in ("size", "modifiedTime", "md5Checksum"))
+        if dest.exists() and same_content:
             log_msg(f"⏭️  [{i}/{len(archivos_drive)}] Sin cambios: {archivo['name']}")
+            versions[archivo["id"]] = {**previous, **version}
             saltados += 1
         else:
             log_msg(f"⬇️  [{i}/{len(archivos_drive)}] Descargando: {archivo['name']}")

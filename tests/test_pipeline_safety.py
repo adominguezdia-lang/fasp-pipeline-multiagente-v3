@@ -194,6 +194,39 @@ class PipelineSafetyTests(unittest.TestCase):
                 excel_stage.COMMON_DIR = previous_common
             self.assertEqual(len(files), 1)
 
+    def test_excel_stage_includes_non_pdf_documents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            (source / "documento.pdf").write_bytes(b"pdf")
+            (source / "registro__drive-abc123.xlsx").write_bytes(b"xlsx")
+            files = excel_stage.input_documents(source)
+            self.assertEqual([item.name for item in files], ["documento.pdf", "registro__drive-abc123.xlsx"])
+
+    def test_excel_stage_prefers_drive_suffixed_duplicate_for_route_traceability(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            (source / "registro.xlsx").write_bytes(b"same")
+            (source / "registro__drive-abc12345.xlsx").write_bytes(b"same")
+            files = excel_stage.input_documents(source)
+            self.assertEqual([item.name for item in files], ["registro__drive-abc12345.xlsx"])
+
+    def test_excel_stage_resolves_drive_path_from_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            path = source / "registro__drive-abc12345.xlsx"
+            path.write_bytes(b"xlsx")
+            info = excel_stage.drive_info(path, source, {
+                "files": {
+                    "abc12345-long-id": {
+                        "path": "01 EdoMex Nancy G/01 Normatividad estatal/registro.xlsx",
+                        "webViewLink": "https://drive/file",
+                        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    }
+                }
+            }, {})
+            self.assertEqual(info["drive_file_id"], "abc12345-long-id")
+            self.assertEqual(info["drive_path"], "01 EdoMex Nancy G/01 Normatividad estatal/registro.xlsx")
+
     def test_excel_stage_infers_readable_title_from_text_or_filename(self):
         title, source = excel_stage.inferred_title(Path("FASP_2026_P1_NAL_BIB-ARTICULO-06_V1.0.pdf"), "", "Coordinación institucional para seguridad pública")
         self.assertEqual(title, "Coordinacion Institucional Para Seguridad Publica")

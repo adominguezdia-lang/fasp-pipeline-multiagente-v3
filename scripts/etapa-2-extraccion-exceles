@@ -11,7 +11,7 @@ from typing import List
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from pipeline_common import content_label, sha256_file, work_dir
+from pipeline_common import content_label, read_json, sha256_file, work_dir
 
 
 WORK_DIR = work_dir()
@@ -19,6 +19,8 @@ FASP_LOCAL = WORK_DIR / "09 FASP"
 EXCELES_DIR = WORK_DIR / "exceles"
 COMMON_DIR = FASP_LOCAL / "00 Bibliografía y normatividad federal"
 STATE_CODES = {"MEX": "EdoMex", "HID": "Hidalgo", "QRO": "Queretaro", "MIC": "Michoacan", "CHI": "Chiapas", "TAB": "Tabasco", "TAM": "Tamaulipas", "ZAC": "Zacatecas"}
+SUPPORTED_SUFFIXES = {".pdf", ".xlsx", ".xls", ".csv", ".tsv"}
+DRIVE_SUFFIX_PATTERN = re.compile(r"__drive-([A-Za-z0-9]+)", re.IGNORECASE)
 
 
 def classify(filename: str) -> str:
@@ -57,7 +59,8 @@ def clean_pdf_date(value: str | None) -> str:
 
 
 def filename_title(path: Path) -> str:
-    stem = re.sub(r"_V\d+(?:\.\d+)?$", "", path.stem, flags=re.IGNORECASE)
+    stem = DRIVE_SUFFIX_PATTERN.sub("", path.stem)
+    stem = re.sub(r"_V\d+(?:\.\d+)?$", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"^FASP_\d{4}_P\d+_", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"^(NAL|MEX|HID|QRO|MIC|CHI|TAB|TAM|ZAC)_", "", stem, flags=re.IGNORECASE)
     stem = re.sub(r"^(BIB|NORFED|NOR|DOC|TDR)[-_]?", "", stem, flags=re.IGNORECASE)
@@ -65,6 +68,42 @@ def filename_title(path: Path) -> str:
     text = re.sub(r"[_-]+", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text.title() if text else path.stem
+
+
+def clean_local_name(path: Path) -> str:
+    return f"{DRIVE_SUFFIX_PATTERN.sub('', path.stem)}{path.suffix}"
+
+
+def drive_id_prefix(file_name: str) -> str | None:
+    match = DRIVE_SUFFIX_PATTERN.search(file_name)
+    return match.group(1) if match else None
+
+
+def snapshot_id_by_prefix(snapshot: dict) -> dict[str, str]:
+    candidates = {}
+    for file_id in snapshot.get("files", {}):
+        safe_id = re.sub(r"[^A-Za-z0-9]", "", file_id)
+        for length in range(8, min(len(safe_id), 32) + 1):
+            candidates.setdefault(safe_id[:length], set()).add(file_id)
+    return {prefix: next(iter(ids)) for prefix, ids in candidates.items() if len(ids) == 1}
+
+
+def manifest_drive_ids(source: Path) -> dict[str, str]:
+    manifest = read_json(source / "contenido_manifest.json", {"files": []})
+    return {record.get("final_name"): record.get("drive_file_id", "") for record in manifest.get("files", []) if record.get("final_name")}
+
+
+def drive_info(path: Path, source: Path, snapshot: dict, manifest_ids: dict[str, str]) -> dict:
+    prefix = drive_id_prefix(path.name)
+    drive_ids = snapshot_id_by_prefix(snapshot)
+    file_id = manifest_ids.get(path.name) or (drive_ids.get(prefix) if prefix else "")
+    item = snapshot.get("files", {}).get(file_id, {}) if file_id else {}
+    return {
+        "drive_file_id": file_id,
+        "drive_path": item.get("path", ""),
+        "drive_link": item.get("webViewLink", ""),
+        "mime_type": item.get("mimeType", ""),
+    }
 
 
 def inferred_title(path: Path, metadata_title: str, text: str) -> tuple[str, str]:
@@ -77,7 +116,7 @@ def inferred_title(path: Path, metadata_title: str, text: str) -> tuple[str, str
     return filename_title(path), "nombre_archivo"
 
 
-def metadata(path: Path) -> dict:
+def pdf_metadata(path: Path) -> dict:
     try:
         import fitz
     except ImportError as error:
@@ -103,6 +142,25 @@ def metadata(path: Path) -> dict:
         }
 
 
+def generic_metadata(path: Path) -> dict:
+    title = filename_title(path)
+    return {
+        "paginas": "",
+        "titulo": title,
+        "fuente_titulo": "nombre_archivo",
+        "autor": "No aplica",
+        "fecha": "",
+        "extracto": "",
+        "estado_texto": "no_pdf",
+    }
+
+
+def metadata(path: Path) -> dict:
+    if path.suffix.lower() == ".pdf":
+        return pdf_metadata(path)
+    return generic_metadata(path)
+
+
 def save_workbook(path: Path, title: str, headers: List[str], rows: List[List[str]]) -> None:
     workbook = Workbook()
     worksheet = workbook.active
@@ -119,7 +177,7 @@ def save_workbook(path: Path, title: str, headers: List[str], rows: List[List[st
     workbook.save(path)
 
 
-def input_pdfs(source: Path, include_common: bool = False) -> list[Path]:
+def input_documents(source: Path, include_common: bool = False) -> list[Path]:
     roots = [source]
     if include_common:
         roots = [
@@ -127,30 +185,40 @@ def input_pdfs(source: Path, include_common: bool = False) -> list[Path]:
             COMMON_DIR / "02 Normatividad federal",
             source,
         ]
-    seen = set()
+    seen = {}
     files = []
     for root in roots:
         if not root.exists():
             continue
-        for pdf in sorted(root.rglob("*.pdf")):
-            digest = sha256_file(pdf)
+        for document in sorted(item for item in root.rglob("*") if item.is_file() and item.suffix.lower() in SUPPORTED_SUFFIXES):
+            digest = sha256_file(document)
             if digest in seen:
+                previous_index = seen[digest]
+                previous = files[previous_index]
+                if drive_id_prefix(document.name) and not drive_id_prefix(previous.name):
+                    files[previous_index] = document
                 continue
-            seen.add(digest)
-            files.append(pdf)
+            seen[digest] = len(files)
+            files.append(document)
     return files
+
+
+def input_pdfs(source: Path, include_common: bool = False) -> list[Path]:
+    return [item for item in input_documents(source, include_common) if item.suffix.lower() == ".pdf"]
 
 
 def extract(source: Path, output: Path, include_common: bool = False) -> int:
     if not source.exists():
         raise FileNotFoundError(f"Directorio fuente no existe: {source}")
     output.mkdir(parents=True, exist_ok=True)
+    snapshot = read_json(WORK_DIR / ".drive_snapshot.json", {"files": {}})
+    manifest_ids = manifest_drive_ids(source)
     records = []
-    for pdf in input_pdfs(source, include_common):
-        data = metadata(pdf)
-        records.append({"path": pdf, "category": classify(pdf.name), "state": state(pdf.name), **data})
-    headers = ["Archivo PDF", "Categoria", "Estado", "Paginas", "Tamano KB", "Titulo", "Fuente Titulo", "Autor PDF", "Fecha PDF", "Estado Texto", "Extracto", "SHA256", "Ruta"]
-    rows = [[r["path"].name, r["category"], r["state"], r["paginas"], round(r["path"].stat().st_size / 1024, 1), r["titulo"], r["fuente_titulo"], r["autor"], r["fecha"], r["estado_texto"], r["extracto"], sha256_file(r["path"]), str(r["path"])] for r in records]
+    for document in input_documents(source, include_common):
+        data = metadata(document)
+        records.append({"path": document, "category": classify(document.name), "state": state(document.name), **drive_info(document, source, snapshot, manifest_ids), **data})
+    headers = ["Archivo", "Tipo Archivo", "Categoria", "Estado", "Paginas", "Tamano KB", "Titulo", "Fuente Titulo", "Autor PDF", "Fecha PDF", "Estado Texto", "Extracto", "SHA256", "Drive File ID", "Ruta Drive", "Link Drive", "Ruta Local"]
+    rows = [[clean_local_name(r["path"]), r["path"].suffix.lower().lstrip("."), r["category"], r["state"], r["paginas"], round(r["path"].stat().st_size / 1024, 1), r["titulo"], r["fuente_titulo"], r["autor"], r["fecha"], r["estado_texto"], r["extracto"], sha256_file(r["path"]), r["drive_file_id"], r["drive_path"], r["drive_link"], str(r["path"])] for r in records]
     save_workbook(output / "00_CORPUS_MAESTRO.xlsx", "Corpus Maestro", headers, rows)
     for category, filename in (("Bibliografia", "01_bibliografia.xlsx"), ("Normatividad Federal", "02_normatividad_federal.xlsx"), ("Normatividad Estatal", "03_normatividad_estatal.xlsx")):
         selected = [row for row, record in zip(rows, records) if record["category"] == category]
@@ -169,7 +237,7 @@ def main() -> int:
     except (OSError, RuntimeError) as error:
         print(f"ERROR: {error}")
         return 1
-    print(f"ETAPA 2 completada: {count} PDFs analizados; 4 Exceles generados")
+    print(f"ETAPA 2 completada: {count} documentos analizados; 4 Exceles generados")
     return 0
 
 
