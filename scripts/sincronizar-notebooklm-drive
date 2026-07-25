@@ -142,7 +142,67 @@ def sync_file(service, path: Path, source: Path, parent_id: str, dry_run: bool) 
     return result
 
 
-def sync_tree(service, source: Path, root_name: str, parent_id: str, dry_run: bool) -> dict:
+def novelty_candidates(actions: list[dict]) -> list[dict]:
+    return [item for item in actions if item.get("type") == "file" and item.get("status") in {"subir", "actualizar", "subido", "actualizado"}]
+
+
+def build_needed_folder_map(
+    service,
+    source: Path,
+    root_folder_id: str,
+    file_records: list[dict],
+    dry_run: bool,
+) -> tuple[dict[Path, str], list[dict]]:
+    folder_ids = {Path("."): root_folder_id}
+    actions = []
+    needed = sorted({Path(record["path"]).parent for record in file_records if Path(record["path"]).parent != Path(".")})
+    for relative in needed:
+        for folder in reversed([relative, *relative.parents]):
+            if folder == Path(".") or folder in folder_ids:
+                continue
+            parent_id = folder_ids[folder.parent]
+            folder_id, status = ensure_folder(service, parent_id, folder.name, dry_run)
+            folder_ids[folder] = folder_id
+            actions.append({"type": "folder", "path": str(folder), "status": f"novedad_{status}", "drive_id": folder_id})
+    return folder_ids, actions
+
+
+def sync_novelties(
+    service,
+    source: Path,
+    parent_id: str,
+    root_name: str,
+    run_label: str,
+    main_actions: list[dict],
+    dry_run: bool,
+) -> list[dict]:
+    candidates = novelty_candidates(main_actions)
+    if not candidates:
+        return []
+    root_id, root_status = ensure_folder(service, parent_id, root_name, dry_run)
+    run_id, run_status = ensure_folder(service, root_id, run_label, dry_run)
+    folder_ids, actions = build_needed_folder_map(service, source, run_id, candidates, dry_run)
+    actions.insert(0, {"type": "folder", "path": ".", "status": f"novedad_{root_status}", "drive_id": root_id, "name": root_name})
+    actions.insert(1, {"type": "folder", "path": run_label, "status": f"novedad_{run_status}", "drive_id": run_id, "name": run_label})
+    for candidate in candidates:
+        path = source / candidate["path"]
+        parent_relative = Path(candidate["path"]).parent
+        item = sync_file(service, path, source, folder_ids[parent_relative], dry_run)
+        item["status"] = f"novedad_{item['status']}"
+        actions.append(item)
+    return actions
+
+
+def sync_tree(
+    service,
+    source: Path,
+    root_name: str,
+    parent_id: str,
+    dry_run: bool,
+    novedades_root_name: str,
+    run_label: str,
+    create_novelties: bool,
+) -> dict:
     if not source.exists():
         raise FileNotFoundError(f"No existe el corpus NotebookLM local: {source}")
     root_id, root_status = ensure_folder(service, parent_id, root_name, dry_run)
@@ -151,16 +211,21 @@ def sync_tree(service, source: Path, root_name: str, parent_id: str, dry_run: bo
     for path in iter_local_files(source):
         relative_parent = path.relative_to(source).parent
         actions.append(sync_file(service, path, source, folder_ids[relative_parent], dry_run))
+    novelty_actions = []
+    if create_novelties:
+        novelty_actions = sync_novelties(service, source, parent_id, novedades_root_name, run_label, actions, dry_run)
     summary = {
         "timestamp": datetime.now().isoformat(),
         "dry_run": dry_run,
         "source": str(source),
         "drive_root_name": root_name,
+        "novedades_root_name": novedades_root_name,
+        "novedades_run_label": run_label,
         "drive_parent_id": parent_id,
         "status_counts": {},
-        "items": actions,
+        "items": actions + novelty_actions,
     }
-    for item in actions:
+    for item in summary["items"]:
         summary["status_counts"][item["status"]] = summary["status_counts"].get(item["status"], 0) + 1
     return summary
 
@@ -169,12 +234,24 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Sube o actualiza el corpus local NotebookLM en Drive.")
     parser.add_argument("--source", type=Path, default=WORK_DIR / "notebooklm")
     parser.add_argument("--drive-root-name", default="FASP_NBLM")
+    parser.add_argument("--novedades-root-name", default="FASP_NBLM_NOVEDADES")
+    parser.add_argument("--run-label", default=datetime.now().strftime("%Y-%m-%d"))
+    parser.add_argument("--no-novedades", action="store_true")
     parser.add_argument("--parent-id", default="root", help="Carpeta padre en Drive; por defecto, Mi unidad.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     service = authenticate_drive()
-    report = sync_tree(service, args.source, args.drive_root_name, args.parent_id, args.dry_run)
+    report = sync_tree(
+        service,
+        args.source,
+        args.drive_root_name,
+        args.parent_id,
+        args.dry_run,
+        args.novedades_root_name,
+        args.run_label,
+        not args.no_novedades,
+    )
     suffix = "dry_run" if args.dry_run else "aplicado"
     write_json(WORK_DIR / "logs" / f"notebooklm_drive_{suffix}_{datetime.now():%Y%m%d_%H%M%S}.json", report)
     write_json(WORK_DIR / "notebooklm" / "notebooklm_drive_manifest.json", report)

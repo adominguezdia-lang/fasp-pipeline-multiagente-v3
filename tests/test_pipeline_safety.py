@@ -232,6 +232,47 @@ class PipelineSafetyTests(unittest.TestCase):
             names = [path.name for path in notebooklm_drive.iter_local_files(source)]
             self.assertEqual(names, ["a.pdf"])
 
+    def test_notebooklm_drive_novelty_candidates_include_only_new_or_changed_files(self):
+        actions = [
+            {"type": "file", "status": "sin_cambios", "path": "a.pdf"},
+            {"type": "file", "status": "subido", "path": "b.pdf"},
+            {"type": "file", "status": "actualizado", "path": "c.pdf"},
+            {"type": "folder", "status": "carpeta_creada", "path": "folder"},
+        ]
+        paths = [item["path"] for item in notebooklm_drive.novelty_candidates(actions)]
+        self.assertEqual(paths, ["b.pdf", "c.pdf"])
+
+    def test_notebooklm_drive_dry_run_creates_novelties_for_new_files(self):
+        class Files:
+            def list(self, **kwargs):
+                class Request:
+                    def execute(self):
+                        return {"files": []}
+                return Request()
+
+        class Service:
+            def files(self):
+                return Files()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "notebooklm"
+            nested = source / "01 EdoMex Nancy G" / "02_Normativa_Estatal"
+            nested.mkdir(parents=True)
+            (nested / "a.pdf").write_bytes(b"new")
+            report = notebooklm_drive.sync_tree(
+                Service(),
+                source,
+                "FASP_NBLM",
+                "root",
+                dry_run=True,
+                novedades_root_name="FASP_NBLM_NOVEDADES",
+                run_label="2026-07-25",
+                create_novelties=True,
+            )
+            self.assertEqual(report["status_counts"]["subir"], 1)
+            self.assertEqual(report["status_counts"]["novedad_subir"], 1)
+            self.assertIn("novedad_carpeta_crear", report["status_counts"])
+
     def test_notebooklm_drive_unchanged_file_uses_sha_property(self):
         class Files:
             def list(self, **kwargs):

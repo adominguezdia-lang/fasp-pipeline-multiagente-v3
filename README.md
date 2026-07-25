@@ -97,6 +97,14 @@ python3 scripts/sincronizar-notebooklm-drive
 
 Este paso crea o reutiliza `FASP_NBLM` en Mi unidad y replica las subcarpetas de `notebooklm/<estado>/`. La ejecución es incremental: cada archivo subido registra su SHA en Drive y se omite cuando el contenido local no cambió. Si el archivo existe pero cambió, se actualiza en el mismo `fileId`; no crea duplicados. No elimina archivos remotos por defecto.
 
+Además genera una carpeta de novedades por corrida en `FASP_NBLM_NOVEDADES/<fecha>/`. Esa carpeta contiene solo archivos nuevos o modificados, preservando la ruta por estado y sección. En NotebookLM, después de la primera carga completa, usa esta carpeta de novedades para agregar fuentes sin tener que seleccionar manualmente entre todo el corpus.
+
+Si se requiere una etiqueta específica para la corrida:
+
+```bash
+python3 scripts/sincronizar-notebooklm-drive --run-label 2026-07-25
+```
+
 ## Garantías operativas
 
 - La sincronización descarga archivos nuevos o modificados según su versión en Drive.
@@ -107,6 +115,7 @@ Este paso crea o reutiliza `FASP_NBLM` en Mi unidad y replica las subcarpetas de
 - La integración y distribución deduplican por SHA para evitar acumulación en corridas incrementales.
 - El corpus NotebookLM se genera aparte de `corpusintegrado`; no modifica Drive ni crea notebooks automáticamente.
 - `FASP_NBLM` es una carpeta intermedia en Drive para importar fuentes a NotebookLM; el pipeline puede actualizarla, pero la creación del notebook en NotebookLM Pro sigue siendo manual.
+- `FASP_NBLM_NOVEDADES/<fecha>` contiene únicamente fuentes nuevas o modificadas para agregarlas manualmente al notebook sin revisar todo el corpus.
 - La distribución se publica de forma completa y respalda la salida anterior, evitando PDFs obsoletos.
 - El manifiesto del corpus registra origen, tamaño y SHA-256 de cada PDF.
 
