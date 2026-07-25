@@ -21,11 +21,13 @@ google_token.json
 .pipeline_checkpoints.json
 
 # Carpetas de datos pesadas (no versionarlas, solo documentación)
-# Descomenta si quieres ignorar:
-# 09 FASP/
-# corpusintegrado/
-# corpus_por_estado_v2/
-# exceles/
+09\ FASP/
+corpusintegrado/
+corpus_por_estado_v2/
+corpus_por_estado/
+corpus/
+corpus_backup/
+exceles/
 
 # Cache
 __pycache__/
