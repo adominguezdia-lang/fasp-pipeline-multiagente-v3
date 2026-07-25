@@ -15,6 +15,21 @@ El flujo es incremental: puede correrse durante varios días sobre la misma carp
 - Token de Google Drive en `~/.hermes/google_token.json`, o en la ruta indicada por `FASP_GOOGLE_TOKEN`.
 - Directorio de trabajo mediante `FASP_WORK_DIR`; si se omite, usa `/Users/adominguezdia/Documents/FASP`.
 
+## Carpeta local de trabajo
+
+La carpeta indicada por `FASP_WORK_DIR` es solo el área operativa de datos. No debe usarse como repositorio Git ni como almacén de scripts, reportes históricos o bitácoras de pruebas. Después de una limpieza o corrida base debe conservar únicamente:
+
+- `09 FASP`
+- `corpusintegrado`
+- `corpus_por_estado_v2`
+- `exceles`
+- `notebooklm`
+- `.drive_snapshot.json`
+- `.drive_watch_snapshot.json`
+- `.metadata`
+
+Los respaldos de corridas anteriores, archivos sueltos en la raíz, logs, bases temporales, dashboards, reportes y carpetas auxiliares deben eliminarse o mantenerse fuera de `FASP_WORK_DIR`. El código fuente del skill vive en este repositorio, no dentro de la carpeta local de datos.
+
 ## Flujo completo
 
 ```bash
