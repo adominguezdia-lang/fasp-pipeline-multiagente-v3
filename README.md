@@ -88,6 +88,15 @@ La salida queda en `notebooklm/<estado>/` con:
 - `FUENTES_NOTEBOOKLM.md`
 - `manifest_notebooklm.json`
 
+Para publicar esa misma estructura como carpeta intermedia en Google Drive, sincroniza el corpus local hacia `FASP_NBLM`:
+
+```bash
+python3 scripts/sincronizar-notebooklm-drive --dry-run
+python3 scripts/sincronizar-notebooklm-drive
+```
+
+Este paso crea o reutiliza `FASP_NBLM` en Mi unidad y replica las subcarpetas de `notebooklm/<estado>/`. La ejecución es incremental: cada archivo subido registra su SHA en Drive y se omite cuando el contenido local no cambió. Si el archivo existe pero cambió, se actualiza en el mismo `fileId`; no crea duplicados. No elimina archivos remotos por defecto.
+
 ## Garantías operativas
 
 - La sincronización descarga archivos nuevos o modificados según su versión en Drive.
@@ -97,6 +106,7 @@ La salida queda en `notebooklm/<estado>/` con:
 - La integración rechaza nombres duplicados antes de modificar el corpus existente.
 - La integración y distribución deduplican por SHA para evitar acumulación en corridas incrementales.
 - El corpus NotebookLM se genera aparte de `corpusintegrado`; no modifica Drive ni crea notebooks automáticamente.
+- `FASP_NBLM` es una carpeta intermedia en Drive para importar fuentes a NotebookLM; el pipeline puede actualizarla, pero la creación del notebook en NotebookLM Pro sigue siendo manual.
 - La distribución se publica de forma completa y respalda la salida anterior, evitando PDFs obsoletos.
 - El manifiesto del corpus registra origen, tamaño y SHA-256 de cada PDF.
 

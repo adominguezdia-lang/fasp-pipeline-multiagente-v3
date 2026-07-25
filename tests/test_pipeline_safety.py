@@ -42,6 +42,13 @@ notebooklm_spec = importlib.util.spec_from_loader(
 notebooklm = importlib.util.module_from_spec(notebooklm_spec)
 notebooklm_spec.loader.exec_module(notebooklm)
 
+notebooklm_drive_spec = importlib.util.spec_from_loader(
+    "sincronizar_notebooklm_drive",
+    SourceFileLoader("sincronizar_notebooklm_drive", str(SCRIPTS / "sincronizar-notebooklm-drive")),
+)
+notebooklm_drive = importlib.util.module_from_spec(notebooklm_drive_spec)
+notebooklm_drive_spec.loader.exec_module(notebooklm_drive)
+
 
 def run(script, *arguments, work_dir):
     environment = {**os.environ, "FASP_WORK_DIR": str(work_dir)}
@@ -200,6 +207,52 @@ class PipelineSafetyTests(unittest.TestCase):
             self.assertIn("00_Bibliografia", text)
             self.assertIn("01_Normativa_Federal", text)
             self.assertIn("02_Normativa_Estatal", text)
+
+    def test_notebooklm_drive_query_escapes_apostrophes(self):
+        self.assertEqual(notebooklm_drive.quote_query_value("FASP's Folder"), "FASP\\'s Folder")
+
+    def test_notebooklm_drive_dry_run_does_not_query_virtual_parent(self):
+        class Files:
+            def list(self, **kwargs):
+                raise AssertionError("No debe consultar Drive para carpetas padre virtuales")
+
+        class Service:
+            def files(self):
+                return Files()
+
+        folder_id, status = notebooklm_drive.ensure_folder(Service(), "dry-run:root/FASP_NBLM", "01 EdoMex", dry_run=True)
+        self.assertEqual(status, "carpeta_crear")
+        self.assertEqual(folder_id, "dry-run:root/FASP_NBLM/01 EdoMex")
+
+    def test_notebooklm_drive_manifest_is_not_uploaded_as_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            (source / "a.pdf").write_bytes(b"source")
+            (source / "notebooklm_drive_manifest.json").write_text("{}", encoding="utf-8")
+            names = [path.name for path in notebooklm_drive.iter_local_files(source)]
+            self.assertEqual(names, ["a.pdf"])
+
+    def test_notebooklm_drive_unchanged_file_uses_sha_property(self):
+        class Files:
+            def list(self, **kwargs):
+                class Request:
+                    def execute(self):
+                        return {"files": [{"id": "file-id", "name": "a.pdf", "appProperties": {"fasp_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}}]}
+                return Request()
+
+        class Service:
+            def files(self):
+                return Files()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "notebooklm"
+            source.mkdir()
+            pdf = source / "a.pdf"
+            pdf.write_bytes(b"hello")
+            result = notebooklm_drive.sync_file(Service(), pdf, source, "parent", dry_run=False)
+            self.assertEqual(result["status"], "sin_cambios")
+            self.assertEqual(result["drive_id"], "file-id")
 
 
 if __name__ == "__main__":
