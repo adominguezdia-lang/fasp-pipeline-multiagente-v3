@@ -40,7 +40,7 @@ def pipeline_state(state_name: str, skip_sync: bool = False) -> int:
     ]) + [
         ("ETAPA 1A", "analizar-y-versionar-pdfs", ["--source", source]),
         ("ETAPA 1", "etapa-1-renombrado", ["--source", source]),
-        ("ETAPA 2", "etapa-2-extraccion-exceles", ["--source", source, "--output", spreadsheets]),
+        ("ETAPA 2", "etapa-2-extraccion-exceles", ["--source", source, "--output", spreadsheets, "--include-common"]),
         ("ETAPA 3", "etapa-3-integracion-corpusintegrado", ["--source", source, "--output", corpus]),
         ("ETAPA 4", "etapa-4-distribucion-por-estado", ["--source", corpus, "--output", distribution]),
     ]

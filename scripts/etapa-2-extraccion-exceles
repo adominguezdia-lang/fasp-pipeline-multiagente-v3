@@ -10,11 +10,13 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 
 from pipeline_common import work_dir
+from pipeline_common import sha256_file
 
 
 WORK_DIR = work_dir()
 FASP_LOCAL = WORK_DIR / "09 FASP"
 EXCELES_DIR = WORK_DIR / "exceles"
+COMMON_DIR = FASP_LOCAL / "00 Bibliografía y normatividad federal"
 STATE_CODES = {"MEX": "EdoMex", "HID": "Hidalgo", "QRO": "Queretaro", "MIC": "Michoacan", "CHI": "Chiapas", "TAB": "Tabasco", "TAM": "Tamaulipas", "ZAC": "Zacatecas"}
 
 
@@ -71,12 +73,34 @@ def save_workbook(path: Path, title: str, headers: List[str], rows: List[List[st
     workbook.save(path)
 
 
-def extract(source: Path, output: Path) -> int:
+def input_pdfs(source: Path, include_common: bool = False) -> list[Path]:
+    roots = [source]
+    if include_common:
+        roots = [
+            COMMON_DIR / "01 Bibliografía",
+            COMMON_DIR / "02 Normatividad federal",
+            source,
+        ]
+    seen = set()
+    files = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for pdf in sorted(root.rglob("*.pdf")):
+            digest = sha256_file(pdf)
+            if digest in seen:
+                continue
+            seen.add(digest)
+            files.append(pdf)
+    return files
+
+
+def extract(source: Path, output: Path, include_common: bool = False) -> int:
     if not source.exists():
         raise FileNotFoundError(f"Directorio fuente no existe: {source}")
     output.mkdir(parents=True, exist_ok=True)
     records = []
-    for pdf in sorted(source.rglob("*.pdf")):
+    for pdf in input_pdfs(source, include_common):
         data = metadata(pdf)
         records.append({"path": pdf, "category": classify(pdf.name), "state": state(pdf.name), **data})
     headers = ["Archivo PDF", "Categoria", "Estado", "Paginas", "Tamano KB", "Titulo PDF", "Autor PDF", "Fecha PDF", "Extracto", "Ruta"]
@@ -92,9 +116,10 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source", type=Path, default=FASP_LOCAL)
     parser.add_argument("--output", type=Path, default=EXCELES_DIR)
+    parser.add_argument("--include-common", action="store_true", help="Incluye bibliografía y normativa federal común al generar Excel por estado.")
     args = parser.parse_args()
     try:
-        count = extract(args.source, args.output)
+        count = extract(args.source, args.output, args.include_common)
     except (OSError, RuntimeError) as error:
         print(f"ERROR: {error}")
         return 1

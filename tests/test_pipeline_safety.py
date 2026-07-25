@@ -28,6 +28,13 @@ renamer_spec = importlib.util.spec_from_loader(
 renamer = importlib.util.module_from_spec(renamer_spec)
 renamer_spec.loader.exec_module(renamer)
 
+excel_spec = importlib.util.spec_from_loader(
+    "etapa_2_extraccion_exceles",
+    SourceFileLoader("etapa_2_extraccion_exceles", str(SCRIPTS / "etapa-2-extraccion-exceles")),
+)
+excel_stage = importlib.util.module_from_spec(excel_spec)
+excel_spec.loader.exec_module(excel_stage)
+
 drive_rename_spec = importlib.util.spec_from_loader(
     "actualizar_nombres_drive_desde_manifest",
     SourceFileLoader("actualizar_nombres_drive_desde_manifest", str(SCRIPTS / "actualizar-nombres-drive-desde-manifest")),
@@ -138,6 +145,47 @@ class PipelineSafetyTests(unittest.TestCase):
         for item in updates:
             report["status_counts"][item["status"]] = report["status_counts"].get(item["status"], 0) + 1
         self.assertTrue(any(report["status_counts"].get(status, 0) for status in {"error", "sin_file_id", "file_id_no_resuelto"}))
+
+    def test_excel_stage_includes_common_sources_for_state_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common_bib = root / "00 Bibliografía y normatividad federal" / "01 Bibliografía"
+            common_federal = root / "00 Bibliografía y normatividad federal" / "02 Normatividad federal"
+            state = root / "01 EdoMex Nancy G"
+            common_bib.mkdir(parents=True)
+            common_federal.mkdir(parents=True)
+            state.mkdir()
+            (common_bib / "FASP_2026_P1_NAL_BIB-ARTICULO_V1.0.pdf").write_bytes(b"bib")
+            (common_federal / "FASP_2026_P1_NAL_NORFED-LEY_V1.0.pdf").write_bytes(b"federal")
+            (state / "FASP_2026_P1_MEX_DOC-DOCUMENTO_V1.0.pdf").write_bytes(b"state")
+            previous_common = excel_stage.COMMON_DIR
+            excel_stage.COMMON_DIR = root / "00 Bibliografía y normatividad federal"
+            try:
+                files = excel_stage.input_pdfs(state, include_common=True)
+            finally:
+                excel_stage.COMMON_DIR = previous_common
+            self.assertEqual([item.name for item in files], [
+                "FASP_2026_P1_NAL_BIB-ARTICULO_V1.0.pdf",
+                "FASP_2026_P1_NAL_NORFED-LEY_V1.0.pdf",
+                "FASP_2026_P1_MEX_DOC-DOCUMENTO_V1.0.pdf",
+            ])
+
+    def test_excel_stage_deduplicates_common_sources_by_sha(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            common_bib = root / "00 Bibliografía y normatividad federal" / "01 Bibliografía"
+            state = root / "01 EdoMex Nancy G"
+            common_bib.mkdir(parents=True)
+            state.mkdir()
+            (common_bib / "FASP_2026_P1_NAL_BIB-ARTICULO_V1.0.pdf").write_bytes(b"same")
+            (state / "FASP_2026_P1_NAL_BIB-ARTICULO_V1.0.pdf").write_bytes(b"same")
+            previous_common = excel_stage.COMMON_DIR
+            excel_stage.COMMON_DIR = root / "00 Bibliografía y normatividad federal"
+            try:
+                files = excel_stage.input_pdfs(state, include_common=True)
+            finally:
+                excel_stage.COMMON_DIR = previous_common
+            self.assertEqual(len(files), 1)
 
     def test_rename_keeps_non_identical_name_collision(self):
         with tempfile.TemporaryDirectory() as temporary:
