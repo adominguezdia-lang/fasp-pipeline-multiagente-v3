@@ -2,6 +2,8 @@
 """ETAPA 2: extrae metadatos reales de PDFs y genera cuatro libros Excel."""
 
 import argparse
+import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import List
@@ -9,8 +11,7 @@ from typing import List
 from openpyxl import Workbook
 from openpyxl.styles import Font
 
-from pipeline_common import work_dir
-from pipeline_common import sha256_file
+from pipeline_common import content_label, sha256_file, work_dir
 
 
 WORK_DIR = work_dir()
@@ -38,6 +39,44 @@ def state(filename: str) -> str:
     return next((name for code, name in STATE_CODES.items() if f"_{code}_" in upper), "Federal")
 
 
+def clean_metadata_value(value: str | None) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def clean_pdf_date(value: str | None) -> str:
+    value = clean_metadata_value(value)
+    match = re.match(r"D:(\d{4})(\d{2})?(\d{2})?", value)
+    if not match:
+        return value
+    year, month, day = match.groups()
+    if month and day:
+        return f"{year}-{month}-{day}"
+    if month:
+        return f"{year}-{month}"
+    return year
+
+
+def filename_title(path: Path) -> str:
+    stem = re.sub(r"_V\d+(?:\.\d+)?$", "", path.stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^FASP_\d{4}_P\d+_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^(NAL|MEX|HID|QRO|MIC|CHI|TAB|TAM|ZAC)_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^(BIB|NORFED|NOR|DOC|TDR)[-_]?", "", stem, flags=re.IGNORECASE)
+    text = unicodedata.normalize("NFKD", stem).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[_-]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.title() if text else path.stem
+
+
+def inferred_title(path: Path, metadata_title: str, text: str) -> tuple[str, str]:
+    metadata_title = clean_metadata_value(metadata_title)
+    if metadata_title:
+        return metadata_title, "metadatos_pdf"
+    label = content_label(text, "")
+    if label != "CONTENIDO_SIN_TITULO":
+        return label.replace("_", " ").title(), "texto_pdf"
+    return filename_title(path), "nombre_archivo"
+
+
 def metadata(path: Path) -> dict:
     try:
         import fitz
@@ -45,15 +84,22 @@ def metadata(path: Path) -> dict:
         raise RuntimeError("Falta PyMuPDF; instala la dependencia 'pymupdf'.") from error
     with fitz.open(path) as document:
         document_metadata = document.metadata or {}
-        preview = ""
-        if document.page_count:
-            preview = document[0].get_text("text").replace("\n", " ").strip()[:500]
+        text_blocks = []
+        for page_index in range(min(document.page_count, 3)):
+            text = document[page_index].get_text("text").replace("\n", " ").strip()
+            if text:
+                text_blocks.append(text)
+        extracted_text = " ".join(text_blocks)
+        preview = re.sub(r"\s+", " ", extracted_text).strip()[:800]
+        title, title_source = inferred_title(path, document_metadata.get("title", ""), extracted_text)
         return {
             "paginas": document.page_count,
-            "titulo": document_metadata.get("title", ""),
-            "autor": document_metadata.get("author", ""),
-            "fecha": document_metadata.get("creationDate", ""),
+            "titulo": title,
+            "fuente_titulo": title_source,
+            "autor": clean_metadata_value(document_metadata.get("author", "")) or "No identificado",
+            "fecha": clean_pdf_date(document_metadata.get("creationDate", "")),
             "extracto": preview,
+            "estado_texto": "con_texto" if preview else "sin_texto_extraible",
         }
 
 
@@ -103,8 +149,8 @@ def extract(source: Path, output: Path, include_common: bool = False) -> int:
     for pdf in input_pdfs(source, include_common):
         data = metadata(pdf)
         records.append({"path": pdf, "category": classify(pdf.name), "state": state(pdf.name), **data})
-    headers = ["Archivo PDF", "Categoria", "Estado", "Paginas", "Tamano KB", "Titulo PDF", "Autor PDF", "Fecha PDF", "Extracto", "Ruta"]
-    rows = [[r["path"].name, r["category"], r["state"], r["paginas"], round(r["path"].stat().st_size / 1024, 1), r["titulo"], r["autor"], r["fecha"], r["extracto"], str(r["path"])] for r in records]
+    headers = ["Archivo PDF", "Categoria", "Estado", "Paginas", "Tamano KB", "Titulo", "Fuente Titulo", "Autor PDF", "Fecha PDF", "Estado Texto", "Extracto", "SHA256", "Ruta"]
+    rows = [[r["path"].name, r["category"], r["state"], r["paginas"], round(r["path"].stat().st_size / 1024, 1), r["titulo"], r["fuente_titulo"], r["autor"], r["fecha"], r["estado_texto"], r["extracto"], sha256_file(r["path"]), str(r["path"])] for r in records]
     save_workbook(output / "00_CORPUS_MAESTRO.xlsx", "Corpus Maestro", headers, rows)
     for category, filename in (("Bibliografia", "01_bibliografia.xlsx"), ("Normatividad Federal", "02_normatividad_federal.xlsx"), ("Normatividad Estatal", "03_normatividad_estatal.xlsx")):
         selected = [row for row, record in zip(rows, records) if record["category"] == category]

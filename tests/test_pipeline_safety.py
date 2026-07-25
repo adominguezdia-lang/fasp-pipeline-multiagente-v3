@@ -187,6 +187,18 @@ class PipelineSafetyTests(unittest.TestCase):
                 excel_stage.COMMON_DIR = previous_common
             self.assertEqual(len(files), 1)
 
+    def test_excel_stage_infers_readable_title_from_text_or_filename(self):
+        title, source = excel_stage.inferred_title(Path("FASP_2026_P1_NAL_BIB-ARTICULO-06_V1.0.pdf"), "", "Coordinación institucional para seguridad pública")
+        self.assertEqual(title, "Coordinacion Institucional Para Seguridad Publica")
+        self.assertEqual(source, "texto_pdf")
+        title, source = excel_stage.inferred_title(Path("FASP_2026_P1_NAL_BIB-ARTICULO-06_V1.0.pdf"), "", "")
+        self.assertEqual(title, "Articulo 06")
+        self.assertEqual(source, "nombre_archivo")
+
+    def test_excel_stage_normalizes_pdf_creation_date(self):
+        self.assertEqual(excel_stage.clean_pdf_date("D:20260725183000-06'00'"), "2026-07-25")
+        self.assertEqual(excel_stage.clean_pdf_date("2026"), "2026")
+
     def test_rename_keeps_non_identical_name_collision(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "source"
