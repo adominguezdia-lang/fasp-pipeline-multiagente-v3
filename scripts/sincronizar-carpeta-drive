@@ -1,0 +1,244 @@
+#!/usr/bin/env python3
+"""
+sincronizar_carpeta_drive.py - Sincroniza UNA carpeta específica desde Drive
+Uso: python3 sincronizar_carpeta_drive.py "nombre_carpeta"
+"""
+
+import sys
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
+import json
+from pathlib import Path
+from datetime import datetime
+
+TOKEN_PATH = Path.home() / ".hermes/google_token.json"
+FASP_LOCAL = Path("/Users/adominguezdia/Documents/FASP/09 FASP")
+DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"
+LOG_DIR = Path("/Users/adominguezdia/Documents/FASP/logs")
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+
+def autenticar_drive():
+    """Autentica con Google Drive"""
+    try:
+        if not TOKEN_PATH.exists():
+            log_msg(f"❌ Token no encontrado: {TOKEN_PATH}", "ERROR")
+            return None
+        
+        with open(TOKEN_PATH, 'r') as f:
+            token_data = json.load(f)
+        
+        creds = Credentials.from_authorized_user_info(token_data)
+        
+        if creds.expired and creds.refresh_token:
+            log_msg("🔄 Renovando token...")
+            creds.refresh(Request())
+        
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        log_msg(f"❌ Error autenticando: {str(e)}", "ERROR")
+        return None
+
+def buscar_carpeta(service, carpeta_nombre):
+    """Busca una carpeta por nombre en el Drive raíz"""
+    try:
+        query = f"'{DRIVE_FOLDER_ID}' in parents and name='{carpeta_nombre}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        results = service.files().list(
+            q=query,
+            spaces='drive',
+            fields='files(id, name)',
+            pageSize=10
+        ).execute()
+        
+        items = results.get('files', [])
+        if items:
+            return items[0]
+        return None
+    except Exception as e:
+        log_msg(f"❌ Error buscando carpeta: {str(e)}", "ERROR")
+        return None
+
+def listar_archivos_recursivo(service, parent_id, carpeta_path=""):
+    """Lista todos los archivos recursivamente en una carpeta"""
+    archivos = []
+    
+    try:
+        query = f"'{parent_id}' in parents and trashed=false"
+        page_token = None
+        
+        while True:
+            results = service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name, mimeType, size)',
+                pageSize=1000,
+                pageToken=page_token
+            ).execute()
+        
+            items = results.get('files', [])
+        
+            for item in items:
+                current_path = f"{carpeta_path}/{item['name']}" if carpeta_path else item['name']
+            
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    # Es carpeta - recursión
+                    subfolder_files = listar_archivos_recursivo(service, item['id'], current_path)
+                    archivos.extend(subfolder_files)
+                else:
+                    # Es archivo
+                    archivos.append({
+                        'id': item['id'],
+                        'name': item['name'],
+                        'path': current_path,
+                        'size': int(item.get('size', 0)),
+                        'mimeType': item.get('mimeType', '')
+                    })
+            
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+    
+    except Exception as e:
+        log_msg(f"❌ Error listando archivos: {str(e)}", "ERROR")
+    
+    return archivos
+
+def descargar_archivo(service, file_id, file_name, dest_path, mime_type=None):
+    """Descarga UN archivo desde Drive (soporta Docs/Sheets/Slides exportándolos)"""
+    try:
+        # Si es archivo Docs Editors, exportar como PDF/DOCX
+        if mime_type and 'application/vnd.google-apps' in mime_type:
+            if 'document' in mime_type:
+                export_mime = 'application/pdf'
+                dest_path = dest_path.with_suffix('.pdf')
+            elif 'spreadsheet' in mime_type:
+                export_mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                dest_path = dest_path.with_suffix('.xlsx')
+            elif 'presentation' in mime_type:
+                export_mime = 'application/pdf'
+                dest_path = dest_path.with_suffix('.pdf')
+            else:
+                export_mime = 'application/pdf'
+                dest_path = dest_path.with_suffix('.pdf')
+            
+            request = service.files().export_media(fileId=file_id, mimeType=export_mime)
+        else:
+            request = service.files().get_media(fileId=file_id)
+        
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        
+        while not done:
+            try:
+                status, done = downloader.next_chunk()
+            except Exception as e:
+                log_msg(f"⚠️  Error descargando chunk de {file_name}: {str(e)}", "WARN")
+                return False
+        
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest_path, 'wb') as f:
+            f.write(fh.getvalue())
+        
+        return True
+    except Exception as e:
+        log_msg(f"❌ Error descargando {file_name}: {str(e)}", "ERROR")
+        return False
+
+def sincronizar_carpeta(carpeta_nombre):
+    """Sincroniza UNA carpeta específica"""
+    
+    print("\n" + "="*80)
+    print(f"SINCRONIZANDO CARPETA: {carpeta_nombre}")
+    print("="*80 + "\n")
+    
+    # Autenticar
+    log_msg("🔐 Autenticando con Drive...")
+    service = autenticar_drive()
+    if not service:
+        log_msg("❌ No se pudo autenticar", "ERROR")
+        return False
+    
+    log_msg("✅ Autenticación exitosa")
+    
+    # Buscar carpeta
+    log_msg(f"🔍 Buscando carpeta '{carpeta_nombre}'...")
+    carpeta_drive = buscar_carpeta(service, carpeta_nombre)
+    if not carpeta_drive:
+        log_msg(f"❌ Carpeta '{carpeta_nombre}' no encontrada en Drive", "ERROR")
+        return False
+    
+    log_msg(f"✅ Encontrada: {carpeta_drive['name']} (ID: {carpeta_drive['id']})")
+    
+    # Listar archivos en Drive
+    log_msg(f"📋 Listando archivos en Drive...")
+    archivos_drive = listar_archivos_recursivo(service, carpeta_drive['id'], carpeta_nombre)
+    log_msg(f"✅ Encontrados {len(archivos_drive)} archivos")
+    
+    # Crear carpeta local
+    carpeta_local = FASP_LOCAL / carpeta_nombre
+    carpeta_local.mkdir(parents=True, exist_ok=True)
+    
+    # Verificar qué ya existe
+    archivos_locales = {}
+    for archivo in carpeta_local.rglob("*"):
+        if archivo.is_file():
+            rel_path = str(archivo.relative_to(FASP_LOCAL))
+            archivos_locales[rel_path] = archivo
+    
+    log_msg(f"📁 Local ya tiene: {len(archivos_locales)} archivos")
+    
+    # Descargar
+    log_msg(f"📥 Descargando archivos...")
+    descargados = 0
+    saltados = 0
+    errores = 0
+    
+    for i, archivo in enumerate(archivos_drive, 1):
+        rel_path = archivo['path']
+        
+        if rel_path in archivos_locales:
+            log_msg(f"⏭️  [{i}/{len(archivos_drive)}] Ya existe: {archivo['name']}")
+            saltados += 1
+        else:
+            log_msg(f"⬇️  [{i}/{len(archivos_drive)}] Descargando: {archivo['name']}")
+            dest = FASP_LOCAL / rel_path
+            
+            if descargar_archivo(service, archivo['id'], archivo['name'], dest, archivo.get('mimeType')):
+                descargados += 1
+            else:
+                errores += 1
+    
+    # Resumen
+    print(f"\n{'='*80}")
+    print("RESUMEN")
+    print(f"{'='*80}")
+    print(f"✅ Descargados: {descargados}")
+    print(f"⏭️  Saltados: {saltados}")
+    print(f"❌ Errores: {errores}")
+    print(f"📊 Total: {len(archivos_drive)}")
+    
+    if errores == 0:
+        print(f"\n✅ SINCRONIZACIÓN EXITOSA - Carpeta '{carpeta_nombre}'")
+        return True
+    else:
+        print(f"\n⚠️  SINCRONIZACIÓN CON ERRORES - {errores} archivos no se descargaron")
+        return False
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("❌ Uso: python3 sincronizar_carpeta_drive.py 'nombre_carpeta'")
+        print("")
+        print("Ejemplo: python3 sincronizar_carpeta_drive.py '01 EdoMex Nancy G'")
+        sys.exit(1)
+    
+    carpeta_nombre = sys.argv[1]
+    exito = sincronizar_carpeta(carpeta_nombre)
+    
+    sys.exit(0 if exito else 1)

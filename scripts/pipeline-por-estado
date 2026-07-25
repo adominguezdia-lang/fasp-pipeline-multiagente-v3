@@ -1,0 +1,161 @@
+#!/usr/bin/env python3
+"""
+pipeline_por_estado.py - Pipeline COMPLETO para UN estado
+Ejecuta TODAS las etapas (0-8) para un estado específico
+"""
+
+import sys
+import subprocess
+from pathlib import Path
+from datetime import datetime
+import json
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+LOG_DIR = WORK_DIR / "logs"
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+
+def ejecutar_etapa(numero_etapa, nombre_etapa, comando):
+    """Ejecuta UNA etapa y reporta resultado"""
+    try:
+        log_msg(f"🚀 Ejecutando {nombre_etapa}...")
+        result = subprocess.run(comando, shell=True, capture_output=True, text=True, timeout=300)
+        
+        if result.returncode == 0:
+            log_msg(f"✅ {nombre_etapa} COMPLETADA")
+            return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "COMPLETADA", "error": None}
+        else:
+            log_msg(f"❌ {nombre_etapa} FALLÓ", "ERROR")
+            return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "FALLO", "error": result.stderr}
+    except subprocess.TimeoutExpired:
+        log_msg(f"⏱️  {nombre_etapa} TIMEOUT", "ERROR")
+        return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "TIMEOUT", "error": "Tiempo agotado"}
+    except Exception as e:
+        log_msg(f"❌ Error en {nombre_etapa}: {str(e)}", "ERROR")
+        return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "ERROR", "error": str(e)}
+
+def pipeline_estado(estado_nombre):
+    """Ejecuta pipeline COMPLETO para UN estado"""
+    
+    print("\n" + "="*100)
+    print(f"PIPELINE COMPLETO: {estado_nombre}")
+    print("="*100 + "\n")
+    
+    inicio = datetime.now()
+    resultados = []
+    
+    # ETAPA 0: Sincronización
+    resultado = ejecutar_etapa(
+        0,
+        "ETAPA 0: Sincronización desde Drive",
+        f"python3 ~/.hermes/profiles/bedrock/bin/sincronizar-carpeta-drive '{estado_nombre}'"
+    )
+    resultados.append(resultado)
+    
+    if resultado["status"] != "COMPLETADA":
+        log_msg(f"❌ Pipeline ABORTADO para {estado_nombre} - Error en ETAPA 0", "ERROR")
+        return resultados
+    
+    # Limpiar duplicados V1.0 después de sincronizar
+    log_msg("🧹 Limpiando duplicados V1.0 después de sincronización...")
+    import subprocess
+    try:
+        subprocess.run(
+            "find /Users/adominguezdia/Documents/FASP/09\\ FASP -name '*V1.0.pdf' -type f | while read f; do rm \"$f\"; done",
+            shell=True,
+            check=False
+        )
+        log_msg("✅ Duplicados V1.0 eliminados")
+    except Exception as e:
+        log_msg(f"⚠️  Error limpiando duplicados: {str(e)}", "WARN")
+    
+    # ETAPA 1: Renombrado
+    resultado = ejecutar_etapa(
+        1,
+        "ETAPA 1: Renombrado de PDFs",
+        "python3 ~/.hermes/profiles/bedrock/bin/etapa-1-renombrado"
+    )
+    resultados.append(resultado)
+    
+    # ETAPA 2: Extracción
+    resultado = ejecutar_etapa(
+        2,
+        "ETAPA 2: Extracción y Exceles",
+        "python3 ~/.hermes/profiles/bedrock/bin/etapa-2-extraccion-exceles"
+    )
+    resultados.append(resultado)
+    
+    # ETAPA 3: Integración
+    resultado = ejecutar_etapa(
+        3,
+        "ETAPA 3: Integración corpusintegrado/",
+        "python3 ~/.hermes/profiles/bedrock/bin/etapa-3-integracion-corpusintegrado"
+    )
+    resultados.append(resultado)
+    
+    # ETAPA 4: Distribución
+    resultado = ejecutar_etapa(
+        4,
+        "ETAPA 4: Distribución por estado",
+        "python3 ~/.hermes/profiles/bedrock/bin/etapa-4-distribucion-por-estado"
+    )
+    resultados.append(resultado)
+    
+    # ETAPA 8: Upload a Drive
+    resultado = ejecutar_etapa(
+        8,
+        "ETAPA 8: Sincronización a Drive",
+        "python3 ~/.hermes/profiles/bedrock/bin/etapa-8-sincronizar-drive"
+    )
+    resultados.append(resultado)
+    
+    # Resumen
+    duracion = datetime.now() - inicio
+    completadas = sum(1 for r in resultados if r["status"] == "COMPLETADA")
+    errores = sum(1 for r in resultados if r["status"] != "COMPLETADA")
+    
+    print("\n" + "="*100)
+    print("RESUMEN FINAL")
+    print("="*100)
+    print(f"Estado: {estado_nombre}")
+    print(f"Etapas completadas: {completadas}/6")
+    print(f"Errores: {errores}")
+    print(f"Duración: {duracion}")
+    print(f"Status: {'✅ EXITOSO' if errores == 0 else '❌ CON ERRORES'}")
+    print("="*100 + "\n")
+    
+    # Guardar reporte
+    reporte = {
+        "timestamp": datetime.now().isoformat(),
+        "estado": estado_nombre,
+        "duracion_segundos": duracion.total_seconds(),
+        "etapas_completadas": completadas,
+        "errores": errores,
+        "etapas": resultados
+    }
+    
+    reporte_path = LOG_DIR / f"pipeline_{estado_nombre}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    with open(reporte_path, 'w') as f:
+        json.dump(reporte, f, indent=2, ensure_ascii=False)
+    
+    log_msg(f"📄 Reporte guardado: {reporte_path}")
+    
+    return resultados
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("❌ Uso: python3 pipeline_por_estado.py 'nombre_estado'")
+        print("")
+        print("Ejemplo: python3 pipeline_por_estado.py '01 EdoMex Nancy G'")
+        sys.exit(1)
+    
+    estado_nombre = sys.argv[1]
+    resultados = pipeline_estado(estado_nombre)
+    
+    errores = sum(1 for r in resultados if r["status"] != "COMPLETADA")
+    sys.exit(0 if errores == 0 else 1)

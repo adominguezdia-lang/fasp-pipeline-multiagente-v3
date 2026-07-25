@@ -1,0 +1,237 @@
+#!/usr/bin/env python3
+"""
+etapa_0_sincronizar_drive.py - ETAPA 0 VERDADERA: Sincroniza TODO desde Google Drive
+Descarga completa de:
+  - Normatividad estatal por estado
+  - TDRs
+  - Bibliografía
+  - Normatividad federal
+ANTES de procesar nada más
+"""
+
+from pathlib import Path
+import shutil
+import json
+from datetime import datetime
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+DRIVE_BASE = Path.home() / "Library/CloudStorage/OneDrive-SharedLibraries-onedrive/Consultoria 2025-2026"
+FASP_DRIVE = DRIVE_BASE / "FASP"
+LOG_FILE = WORK_DIR / "ETAPA_0_SINCRONIZACION_DRIVE.md"
+
+# Mapeo de estados
+ESTADOS = {
+    "Estado_de_Mexico": ["Estado de Mexico", "EdoMex", "MEX"],
+    "Hidalgo": ["Hidalgo", "HID"],
+    "Queretaro": ["Querétaro", "Queretaro", "QRO"],
+    "Chiapas": ["Chiapas", "CHI"],
+    "Tabasco": ["Tabasco", "TAB"],
+    "Tamaulipas": ["Tamaulipas", "TAM"],
+    "Zacatecas": ["Zacatecas", "ZAC"],
+    "Michoacan": ["Michoacán", "Michoacan", "MIC"],
+}
+
+class SincronizadorDrive:
+    def __init__(self):
+        self.log = []
+        self.estadisticas = {
+            "estados_procesados": 0,
+            "archivos_copiados": 0,
+            "tamaño_total_mb": 0,
+            "errores": 0,
+            "carpetas_faltantes": 0
+        }
+    
+    def log_msg(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {msg}"
+        self.log.append(line)
+        print(line)
+    
+    def verificar_drive(self):
+        """Verifica acceso a Drive"""
+        self.log_msg("🔍 Verificando acceso a Google Drive...")
+        
+        if not FASP_DRIVE.exists():
+            self.log_msg(f"❌ FASP NO EXISTE en: {FASP_DRIVE}")
+            self.log_msg("   Verifica que OneDrive esté sincronizado")
+            return False
+        
+        self.log_msg(f"✅ FASP encontrado: {FASP_DRIVE}")
+        return True
+    
+    def encontrar_carpeta_estado(self, estado_local):
+        """Busca carpeta de estado en Drive (flexible con nombres)"""
+        variantes = ESTADOS.get(estado_local, [])
+        
+        for carpeta in FASP_DRIVE.iterdir():
+            if not carpeta.is_dir():
+                continue
+            
+            for variante in variantes:
+                if variante.lower() in carpeta.name.lower():
+                    return carpeta
+        
+        return None
+    
+    def sincronizar_carpeta_normatividad(self, carpeta_origen, carpeta_destino, categoria):
+        """Sincroniza una carpeta de normatividad"""
+        
+        if not carpeta_origen.exists():
+            return 0
+        
+        pdfs = list(carpeta_origen.glob("*.pdf"))
+        if not pdfs:
+            return 0
+        
+        carpeta_destino.mkdir(parents=True, exist_ok=True)
+        copiados = 0
+        tamaño = 0
+        
+        for pdf in pdfs:
+            try:
+                destino = carpeta_destino / pdf.name
+                
+                # Copiar si no existe o es más nuevo
+                if not destino.exists() or pdf.stat().st_mtime > destino.stat().st_mtime:
+                    shutil.copy2(pdf, destino)
+                    copiados += 1
+                    tamaño += pdf.stat().st_size
+                    self.log_msg(f"     ✅ {pdf.name} ({pdf.stat().st_size / 1024 / 1024:.1f} MB)")
+                else:
+                    tamaño += destino.stat().st_size
+            
+            except Exception as e:
+                self.log_msg(f"     ❌ Error: {pdf.name}: {str(e)}")
+                self.estadisticas["errores"] += 1
+        
+        self.estadisticas["archivos_copiados"] += copiados
+        self.estadisticas["tamaño_total_mb"] += tamaño / 1024 / 1024
+        return copiados
+    
+    def sincronizar_estado(self, estado_local):
+        """Sincroniza TODO de un estado desde Drive"""
+        
+        self.log_msg(f"\n  📥 Sincronizando {estado_local}...")
+        
+        # Buscar carpeta del estado
+        carpeta_estado_drive = self.encontrar_carpeta_estado(estado_local)
+        
+        if not carpeta_estado_drive:
+            self.log_msg(f"     ⚠️  Carpeta NO ENCONTRADA en Drive")
+            self.estadisticas["carpetas_faltantes"] += 1
+            return False
+        
+        self.log_msg(f"     Encontrado: {carpeta_estado_drive.name}")
+        
+        # Carpeta destino local
+        carpeta_destino_local = WORK_DIR / "corpus_por_estado_v2" / estado_local
+        
+        # Posibles nombres de carpetas
+        nombres_tdr = ["TDR", "01*TDR", "*TDR*"]
+        nombres_normatividad = ["Normatividad estatal", "01*Normatividad", "*Normatividad*estatal*"]
+        
+        copiados_total = 0
+        
+        # Sincronizar TDRs
+        self.log_msg(f"     📄 TDRs:")
+        for patron in nombres_tdr:
+            carpetas = list(carpeta_estado_drive.glob(patron))
+            for carpeta in carpetas:
+                if carpeta.is_dir():
+                    copiados = self.sincronizar_carpeta_normatividad(
+                        carpeta,
+                        carpeta_destino_local / "01_TDR",
+                        "TDR"
+                    )
+                    copiados_total += copiados
+        
+        # Sincronizar normatividad estatal
+        self.log_msg(f"     📋 Normatividad Estatal:")
+        for patron in nombres_normatividad:
+            carpetas = list(carpeta_estado_drive.glob(patron))
+            for carpeta in carpetas:
+                if carpeta.is_dir():
+                    copiados = self.sincronizar_carpeta_normatividad(
+                        carpeta,
+                        carpeta_destino_local / "02_Normatividad_Estatal",
+                        "Normatividad Estatal"
+                    )
+                    copiados_total += copiados
+        
+        if copiados_total > 0:
+            self.log_msg(f"     ✅ {copiados_total} archivos sincronizados")
+        else:
+            self.log_msg(f"     ℹ️  Sin nuevos archivos")
+        
+        self.estadisticas["estados_procesados"] += 1
+        return True
+    
+    def ejecutar_sincronizacion(self):
+        """Ejecuta sincronización completa"""
+        print("\n" + "="*70)
+        print("ETAPA 0: SINCRONIZACIÓN COMPLETA DESDE GOOGLE DRIVE")
+        print("="*70)
+        
+        # Verificar Drive
+        if not self.verificar_drive():
+            self.log_msg("❌ NO SE PUEDE ACCEDER A GOOGLE DRIVE")
+            self.log_msg("⚠️  ETAPA 0 FALLÓ - DETENER PIPELINE")
+            return False
+        
+        self.log_msg("\n📥 Sincronizando todos los estados...\n")
+        
+        # Sincronizar cada estado
+        for estado_local in ESTADOS.keys():
+            self.sincronizar_estado(estado_local)
+        
+        # Resumen
+        print("\n" + "="*70)
+        print("RESUMEN ETAPA 0: SINCRONIZACIÓN")
+        print("="*70)
+        self.log_msg(f"\nEstados procesados: {self.estadisticas['estados_procesados']}")
+        self.log_msg(f"Archivos copiados: {self.estadisticas['archivos_copiados']}")
+        self.log_msg(f"Tamaño descargado: {self.estadisticas['tamaño_total_mb']:.1f} MB")
+        self.log_msg(f"Carpetas no encontradas: {self.estadisticas['carpetas_faltantes']}")
+        self.log_msg(f"Errores: {self.estadisticas['errores']}")
+        
+        # Generar reporte
+        self.generar_reporte()
+        
+        exito = self.estadisticas['archivos_copiados'] > 0 or self.estadisticas['errores'] == 0
+        
+        if exito:
+            self.log_msg(f"\n✅ ETAPA 0 COMPLETADA - Sincronización exitosa")
+            return True
+        else:
+            self.log_msg(f"\n⚠️  ETAPA 0 CON ADVERTENCIAS")
+            return True
+    
+    def generar_reporte(self):
+        """Genera reporte markdown"""
+        reporte = f"""# ETAPA 0: SINCRONIZACIÓN DESDE GOOGLE DRIVE
+
+**Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Estadísticas
+
+| Métrica | Valor |
+|---------|-------|
+| Estados procesados | {self.estadisticas['estados_procesados']} |
+| Archivos copiados | {self.estadisticas['archivos_copiados']} |
+| Tamaño descargado | {self.estadisticas['tamaño_total_mb']:.1f} MB |
+| Carpetas no encontradas | {self.estadisticas['carpetas_faltantes']} |
+| Errores | {self.estadisticas['errores']} |
+
+## Status
+
+{'✅ SINCRONIZACIÓN COMPLETADA' if self.estadisticas['archivos_copiados'] > 0 else '⚠️  SIN NUEVOS ARCHIVOS'}
+
+"""
+        with open(LOG_FILE, 'w') as f:
+            f.write(reporte)
+
+if __name__ == "__main__":
+    sincronizador = SincronizadorDrive()
+    exito = sincronizador.ejecutar_sincronizacion()
+    exit(0 if exito else 1)

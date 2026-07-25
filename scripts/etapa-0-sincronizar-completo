@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""
+etapa_0_sincronizar_completo_drive.py - ETAPA 0: Sincroniza TODO desde Drive
+Descarga TODOS los archivos EXCEPTO videos - estructura completa
+"""
+
+from pathlib import Path
+from datetime import datetime
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
+import json
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+FASP_LOCAL = WORK_DIR / "09 FASP"
+TOKEN_PATH = Path.home() / ".hermes/google_token.json"
+DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"
+LOG_FILE = WORK_DIR / "logs" / f"etapa_0_completo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+# Extensiones de video a EXCLUIR
+EXTENSIONES_EXCLUIR = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.m4a', '.wav'}
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    with open(LOG_FILE, 'a') as f:
+        f.write(line + "\n")
+
+def autenticar_drive():
+    """Autentica con Google Drive"""
+    try:
+        if not TOKEN_PATH.exists():
+            log_msg(f"❌ Token no encontrado: {TOKEN_PATH}", "ERROR")
+            return None
+        
+        with open(TOKEN_PATH, 'r') as f:
+            token_data = json.load(f)
+        
+        creds = Credentials.from_authorized_user_info(token_data)
+        
+        if creds.expired and creds.refresh_token:
+            log_msg("🔄 Renovando token...")
+            creds.refresh(Request())
+        
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        log_msg(f"❌ Error autenticando: {str(e)}", "ERROR")
+        return None
+
+def descargar_archivo(service, file_id, file_name, dest_path):
+    """Descarga UN archivo desde Drive"""
+    try:
+        request = service.files().get_media(fileId=file_id)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            status, done = downloader.next_chunk()
+        
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(dest_path, 'wb') as f:
+            f.write(fh.getvalue())
+        
+        return True
+    except Exception as e:
+        log_msg(f"⚠️  Error descargando {file_name}: {str(e)}", "WARN")
+        return False
+
+def listar_todo_recursivo(service, parent_id, path_prefix=""):
+    """Lista TODOS los archivos (EXCEPTO videos)"""
+    archivos = []
+    
+    try:
+        query = f"'{parent_id}' in parents and trashed=false"
+        page_token = None
+        
+        while True:
+            results = service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name, mimeType, size)',
+                pageSize=1000,
+                pageToken=page_token
+            ).execute()
+            
+            items = results.get('files', [])
+            
+            for item in items:
+                current_path = f"{path_prefix}/{item['name']}" if path_prefix else item['name']
+                
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    # Es carpeta - recursión
+                    log_msg(f"📁 Carpeta: {current_path}")
+                    subfolder_files = listar_todo_recursivo(service, item['id'], current_path)
+                    archivos.extend(subfolder_files)
+                else:
+                    # Verificar si es video
+                    ext = Path(item['name']).suffix.lower()
+                    if ext in EXTENSIONES_EXCLUIR:
+                        log_msg(f"⏭️  Saltando (video/audio): {item['name']}")
+                        continue
+                    
+                    # Es archivo válido (PDF, JSON, MD, XLSX, DOCX, etc)
+                    archivos.append({
+                        'id': item['id'],
+                        'name': item['name'],
+                        'path': current_path,
+                        'size': int(item.get('size', 0)),
+                        'mime': item['mimeType']
+                    })
+            
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+    
+    except Exception as e:
+        log_msg(f"❌ Error listando archivos: {str(e)}", "ERROR")
+    
+    return archivos
+
+print("\n" + "="*80)
+print("ETAPA 0: SINCRONIZACIÓN COMPLETA DESDE DRIVE (SIN VIDEOS)")
+print("="*80)
+
+try:
+    log_msg("Iniciando sincronización COMPLETA (excluir videos)...")
+    log_msg(f"Folder ID: {DRIVE_FOLDER_ID}")
+    log_msg(f"Destino: {FASP_LOCAL}")
+    log_msg(f"Excluyendo: {', '.join(EXTENSIONES_EXCLUIR)}")
+    
+    FASP_LOCAL.mkdir(parents=True, exist_ok=True)
+    
+    # Autenticar
+    log_msg("🔐 Autenticando con Drive...")
+    service = autenticar_drive()
+    if not service:
+        log_msg("❌ No se pudo autenticar", "ERROR")
+        exit(1)
+    
+    log_msg("✅ Autenticación exitosa")
+    
+    # Listar TODO (sin videos)
+    log_msg("📋 Listando archivos en Drive (SIN videos)...")
+    archivos_drive = listar_todo_recursivo(service, DRIVE_FOLDER_ID)
+    log_msg(f"✅ Encontrados {len(archivos_drive)} archivos (videos excluidos)")
+    
+    # Desglose por tipo
+    tipos = {}
+    for archivo in archivos_drive:
+        ext = Path(archivo['name']).suffix or "sin_ext"
+        tipos[ext] = tipos.get(ext, 0) + 1
+    
+    log_msg("\n📊 Desglose por tipo:")
+    for ext, count in sorted(tipos.items(), key=lambda x: x[1], reverse=True):
+        log_msg(f"   {ext}: {count} archivos")
+    
+    # Comparar con local
+    archivos_locales = set()
+    for f in FASP_LOCAL.rglob("*"):
+        if f.is_file():
+            rel_path = f.relative_to(FASP_LOCAL)
+            archivos_locales.add(str(rel_path))
+    
+    log_msg(f"\n📁 Local ya tiene: {len(archivos_locales)} archivos")
+    
+    # Descargar nuevos/modificados
+    log_msg("\n📥 Descargando archivos...")
+    descargados = 0
+    saltados = 0
+    
+    for archivo in archivos_drive:
+        rel_path = str(Path(archivo['path']))
+        
+        if rel_path in archivos_locales:
+            log_msg(f"⏭️  Ya existe: {archivo['name']}")
+            saltados += 1
+        else:
+            log_msg(f"⬇️  Descargando: {archivo['name']}")
+            dest = FASP_LOCAL / rel_path
+            if descargar_archivo(service, archivo['id'], archivo['name'], dest):
+                descargados += 1
+            
+            if (descargados + saltados) % 10 == 0:
+                log_msg(f"   Progreso: {descargados + saltados}/{len(archivos_drive)}")
+    
+    log_msg(f"\n✅ Descargados: {descargados} archivos nuevos")
+    log_msg(f"⏭️  Saltados: {saltados} archivos existentes")
+    log_msg(f"📊 Total Drive (sin videos): {len(archivos_drive)}")
+    
+    # Verificación final
+    archivos_finales = list(FASP_LOCAL.rglob("*"))
+    archivos_finales = [f for f in archivos_finales if f.is_file()]
+    
+    log_msg(f"\n✅ Verificación final: {len(archivos_finales)} archivos en local")
+    log_msg("✅ ETAPA 0 COMPLETADA - Sincronización COMPLETA exitosa (SIN videos)")
+    
+    print("\n✅ ETAPA 0 FINALIZADA")
+    print(f"Log: {LOG_FILE}")
+    print(f"Total archivos sincronizados: {len(archivos_finales)}")
+    
+except Exception as e:
+    log_msg(f"❌ Error en ETAPA 0: {str(e)}", "ERROR")
+    raise

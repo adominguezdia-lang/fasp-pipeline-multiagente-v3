@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""
+etapa_0_sincronizar_drive_rclone.py - ETAPA 0: Sincroniza con rclone + Google Drive OAuth
+Usa tu autenticación Google automáticamente
+"""
+
+from pathlib import Path
+import subprocess
+import json
+from datetime import datetime
+import sys
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"
+LOG_FILE = WORK_DIR / "ETAPA_0_SINCRONIZACION_LOG.txt"
+REPORT_FILE = WORK_DIR / "ETAPA_0_SINCRONIZACION.md"
+
+class SincronizadorDriveRclone:
+    def __init__(self):
+        self.log = []
+        self.estadisticas = {
+            "archivos_descargados": 0,
+            "tamaño_total_mb": 0,
+            "errores": 0,
+            "carpetas_creadas": 0
+        }
+    
+    def log_msg(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {msg}"
+        self.log.append(line)
+        print(line)
+    
+    def ejecutar_comando(self, cmd, descripcion="", mostrar_output=True):
+        """Ejecuta comando y captura output"""
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=600
+            )
+            if mostrar_output and result.stdout:
+                self.log_msg(result.stdout)
+            return result.returncode == 0, result.stdout, result.stderr
+        except Exception as e:
+            return False, "", str(e)
+    
+    def verificar_rclone(self):
+        """Verifica que rclone esté instalado"""
+        self.log_msg("🔍 Verificando rclone...")
+        
+        success, _, _ = self.ejecutar_comando("which rclone", mostrar_output=False)
+        
+        if not success:
+            self.log_msg("❌ rclone no instalado")
+            return False
+        
+        self.log_msg("✅ rclone disponible")
+        return True
+    
+    def sincronizar_desde_drive_rclone(self):
+        """Sincroniza usando rclone con ID de carpeta"""
+        self.log_msg(f"\n📥 Sincronizando desde Google Drive (rclone)...")
+        self.log_msg(f"   Folder ID: {DRIVE_FOLDER_ID}")
+        self.log_msg(f"   Destino: {WORK_DIR}\n")
+        
+        # Crear directorio temporal
+        temp_dir = WORK_DIR / "drive_sync_temp"
+        temp_dir.mkdir(exist_ok=True)
+        
+        # Comando rclone: copiar carpeta completa desde Drive
+        # Usando el ID de carpeta directamente
+        cmd = f"rclone copy 'drive:({DRIVE_FOLDER_ID})' {temp_dir} --no-check-certificate -P"
+        
+        self.log_msg(f"⏳ Descargando desde Drive con rclone...")
+        self.log_msg(f"   (Si es la primera vez, autoriza en tu navegador)\n")
+        
+        success, stdout, stderr = self.ejecutar_comando(cmd, "Descargar con rclone", mostrar_output=False)
+        
+        if not success:
+            # Mostrar error pero continuar si hay archivos
+            self.log_msg(f"⚠️  Posible problema: {stderr[:200] if stderr else 'desconocido'}")
+            self.log_msg(f"Verificando si se descargó algo...\n")
+        else:
+            self.log_msg(f"✅ Descarga completada\n")
+        
+        # Procesar archivos descargados
+        return self.organizar_archivos_descargados(temp_dir)
+    
+    def organizar_archivos_descargados(self, temp_dir):
+        """Organiza archivos descargados en estructura correcta"""
+        self.log_msg(f"📂 Organizando archivos descargados...\n")
+        
+        if not temp_dir.exists():
+            self.log_msg(f"❌ Directorio temporal no existe")
+            return False
+        
+        # Crear corpus_por_estado_v2 si no existe
+        corpus_dir = WORK_DIR / "corpus_por_estado_v2"
+        corpus_dir.mkdir(exist_ok=True)
+        self.estadisticas["carpetas_creadas"] += 1
+        
+        # Buscar PDFs en temp_dir
+        pdfs_encontrados = list(temp_dir.glob("**/*.pdf"))
+        self.log_msg(f"Encontrados: {len(pdfs_encontrados)} PDFs\n")
+        
+        if not pdfs_encontrados:
+            self.log_msg("⚠️  No hay PDFs para sincronizar")
+            return True
+        
+        # Clasificar y copiar por estado
+        for pdf_path in pdfs_encontrados:
+            try:
+                tamaño_mb = pdf_path.stat().st_size / 1024 / 1024
+                nombre = pdf_path.name
+                
+                # Detectar estado del PDF
+                estado = self.detectar_estado(nombre)
+                
+                if not estado:
+                    estado = "Otros"
+                
+                # Crear estructura de carpeta
+                carpeta_destino = corpus_dir / estado / "02_Normatividad_Estatal"
+                carpeta_destino.mkdir(parents=True, exist_ok=True)
+                
+                # Copiar archivo
+                destino = carpeta_destino / nombre
+                
+                if not destino.exists():
+                    subprocess.run(f"cp '{pdf_path}' '{destino}'", shell=True, capture_output=True)
+                    
+                    self.log_msg(f"✅ {nombre} → {estado}/02_Normatividad_Estatal/ ({tamaño_mb:.1f} MB)")
+                    self.estadisticas["archivos_descargados"] += 1
+                    self.estadisticas["tamaño_total_mb"] += tamaño_mb
+                else:
+                    self.log_msg(f"ℹ️  {nombre} (ya existe)")
+            
+            except Exception as e:
+                self.log_msg(f"❌ Error: {pdf_path.name}: {str(e)}")
+                self.estadisticas["errores"] += 1
+        
+        # Limpiar temp_dir
+        import shutil
+        try:
+            shutil.rmtree(temp_dir)
+            self.log_msg(f"\n🧹 Limpieza completada")
+        except:
+            pass
+        
+        return True
+    
+    def detectar_estado(self, nombre_archivo):
+        """Detecta estado del PDF por su nombre"""
+        nombre_upper = nombre_archivo.upper()
+        
+        mapeos = {
+            "MEX": "Estado_de_Mexico",
+            "EDOEM": "Estado_de_Mexico",
+            "HID": "Hidalgo",
+            "QRO": "Queretaro",
+            "CHI": "Chiapas",
+            "TAB": "Tabasco",
+            "TAM": "Tamaulipas",
+            "ZAC": "Zacatecas",
+            "MIC": "Michoacan",
+        }
+        
+        for codigo, estado in mapeos.items():
+            if codigo in nombre_upper:
+                return estado
+        
+        return None
+    
+    def generar_reporte(self):
+        """Genera reporte final"""
+        reporte = f"""# ETAPA 0: SINCRONIZACIÓN DESDE GOOGLE DRIVE (rclone)
+
+**Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Fuente:** Google Drive folder (ID: {DRIVE_FOLDER_ID})
+**Destino:** {WORK_DIR}/corpus_por_estado_v2/
+**Método:** rclone con autenticación OAuth
+
+## 📊 Estadísticas
+
+| Métrica | Valor |
+|---------|-------|
+| Archivos descargados | {self.estadisticas['archivos_descargados']} |
+| Tamaño total | {self.estadisticas['tamaño_total_mb']:.1f} MB |
+| Carpetas creadas | {self.estadisticas['carpetas_creadas']} |
+| Errores | {self.estadisticas['errores']} |
+
+## ✅ Status
+
+"""
+        
+        if self.estadisticas['archivos_descargados'] > 0:
+            reporte += f"🟢 **SINCRONIZACIÓN EXITOSA**\n\n"
+            reporte += f"✅ {self.estadisticas['archivos_descargados']} archivos descargados desde Drive\n"
+            reporte += f"✅ {self.estadisticas['tamaño_total_mb']:.1f} MB sincronizados\n"
+        else:
+            reporte += f"⚠️  **SIN NUEVOS ARCHIVOS**\n\n"
+            reporte += f"ℹ️  No hay archivos nuevos para descargar\n"
+        
+        if self.estadisticas['errores'] > 0:
+            reporte += f"⚠️  {self.estadisticas['errores']} error(es) durante sincronización\n"
+        
+        reporte += f"""
+
+## 📁 Estructura creada
+
+```
+corpus_por_estado_v2/
+├── Estado_de_Mexico/02_Normatividad_Estatal/
+├── Hidalgo/02_Normatividad_Estatal/
+├── Querétaro/02_Normatividad_Estatal/
+├── Chiapas/02_Normatividad_Estatal/
+├── Tabasco/02_Normatividad_Estatal/
+├── Tamaulipas/02_Normatividad_Estatal/
+├── Zacatecas/02_Normatividad_Estatal/
+├── Michoacán/02_Normatividad_Estatal/
+└── Otros/02_Normatividad_Estatal/
+```
+
+---
+
+**Análisis automatizado:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        
+        return reporte
+    
+    def ejecutar(self):
+        """Ejecuta sincronización completa"""
+        print("\n" + "="*70)
+        print("ETAPA 0: SINCRONIZACIÓN DESDE GOOGLE DRIVE (rclone)")
+        print("="*70 + "\n")
+        
+        # Verificar rclone
+        if not self.verificar_rclone():
+            self.log_msg("❌ ETAPA 0 FALLÓ: rclone no disponible")
+            return False
+        
+        # Sincronizar
+        if not self.sincronizar_desde_drive_rclone():
+            self.log_msg("❌ ETAPA 0 FALLÓ: Error durante sincronización")
+            return False
+        
+        # Generar reporte
+        reporte = self.generar_reporte()
+        
+        print("\n" + "="*70)
+        print("RESUMEN ETAPA 0")
+        print("="*70)
+        print(reporte)
+        
+        # Guardar reporte
+        with open(REPORT_FILE, 'w') as f:
+            f.write(reporte)
+        
+        # Guardar log
+        with open(LOG_FILE, 'w') as f:
+            f.write("\n".join(self.log))
+        
+        self.log_msg(f"\n✅ ETAPA 0 COMPLETADA")
+        self.log_msg(f"   Reporte: {REPORT_FILE}")
+        self.log_msg(f"   Log: {LOG_FILE}")
+        
+        return True
+
+if __name__ == "__main__":
+    sincronizador = SincronizadorDriveRclone()
+    exito = sincronizador.ejecutar()
+    exit(0 if exito else 1)

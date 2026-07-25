@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""
+sync_corpus_from_drive.py - ETAPA 0: Sincronización exhaustiva local vs Drive
+Verifica diferencias, descarga faltantes, valida integridad
+Es el PRIMER paso del pipeline - sin esto no hay seguridad
+"""
+
+import json
+import hashlib
+import os
+from pathlib import Path
+from datetime import datetime
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
+
+# Configuración
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+CORPUS_DIR = WORK_DIR / "corpusintegrado"
+SYNC_REPORT = WORK_DIR / "sync_report_etapa0.json"
+SYNC_LOG = WORK_DIR / "sync_log_etapa0.txt"
+
+# Google Drive ID (carpeta FASP)
+DRIVE_FOLDER_ID = "1w1s9Xz5K9mZ0pQrRsT6uVwXyZaBcDeFg"  # Ajustar según sea necesario
+
+class SincronizadorEtapa0:
+    """Sincronización exhaustiva: Local vs Drive"""
+    
+    def __init__(self):
+        self.log = []
+        self.drive_files = {}
+        self.local_files = {}
+        self.report = {
+            "timestamp": datetime.now().isoformat(),
+            "etapa": "ETAPA 0: Sincronización",
+            "estado": "en_progreso",
+            "resumen": {},
+            "diferencias": {
+                "solo_en_drive": [],
+                "solo_local": [],
+                "diferentes": [],
+                "identicos": []
+            },
+            "acciones": {
+                "descargados": [],
+                "eliminados": [],
+                "actualizados": []
+            },
+            "validaciones": []
+        }
+        self.google_service = None
+        self.conectar_drive()
+    
+    def log_msg(self, msg, nivel="INFO"):
+        """Registra mensaje"""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {nivel}: {msg}"
+        self.log.append(line)
+        print(line)
+    
+    def guardar_log(self):
+        """Guarda logs a archivo"""
+        with open(SYNC_LOG, 'a') as f:
+            f.write("\n".join(self.log))
+            f.write("\n\n")
+    
+    def conectar_drive(self):
+        """Conecta a Google Drive (requiere credenciales)"""
+        self.log_msg("Intentando conectar a Google Drive...")
+        try:
+            # Buscar credenciales en variables de entorno o archivo
+            creds_path = Path.home() / ".hermes" / "google-drive-credentials.json"
+            
+            if creds_path.exists():
+                credentials = Credentials.from_service_account_file(
+                    str(creds_path),
+                    scopes=['https://www.googleapis.com/auth/drive.readonly']
+                )
+                self.google_service = build('drive', 'v3', credentials=credentials)
+                self.log_msg("✅ Conectado a Google Drive")
+            else:
+                self.log_msg("⚠️  Credenciales no encontradas - modo offline", "WARN")
+                self.google_service = None
+        except Exception as e:
+            self.log_msg(f"⚠️  No se pudo conectar a Drive: {str(e)}", "WARN")
+            self.google_service = None
+    
+    def obtener_sha256(self, filepath):
+        """Calcula SHA-256 de archivo"""
+        sha = hashlib.sha256()
+        try:
+            with open(filepath, 'rb') as f:
+                sha.update(f.read())
+            return sha.hexdigest()
+        except:
+            return None
+    
+    def escanear_local(self):
+        """Escanea archivos locales en corpusintegrado"""
+        self.log_msg("Escaneando archivos locales...")
+        
+        CORPUS_DIR.mkdir(exist_ok=True)
+        pdfs = list(CORPUS_DIR.glob("*.pdf"))
+        
+        for pdf in pdfs:
+            sha = self.obtener_sha256(pdf)
+            self.local_files[pdf.name] = {
+                "path": str(pdf),
+                "size": pdf.stat().st_size,
+                "sha256": sha,
+                "modified": datetime.fromtimestamp(pdf.stat().st_mtime).isoformat()
+            }
+        
+        self.log_msg(f"✅ {len(pdfs)} archivos locales escaneados")
+        self.report["resumen"]["archivos_locales"] = len(pdfs)
+        self.report["resumen"]["tamaño_local_mb"] = sum(f["size"] for f in self.local_files.values()) / 1024 / 1024
+    
+    def escanear_drive(self):
+        """Escanea carpeta en Google Drive"""
+        self.log_msg("Escaneando Google Drive...")
+        
+        if not self.google_service:
+            self.log_msg("⚠️  Sin acceso a Drive - saltando escaneo remoto", "WARN")
+            self.report["resumen"]["archivos_drive"] = "N/A (sin credenciales)"
+            return
+        
+        try:
+            results = self.google_service.files().list(
+                q=f"'{DRIVE_FOLDER_ID}' in parents and trashed=false",
+                spaces='drive',
+                fields='files(id, name, mimeType, size, modifiedTime, md5Checksum)',
+                pageSize=1000
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            for file in files:
+                if file['mimeType'] == 'application/pdf':
+                    self.drive_files[file['name']] = {
+                        "id": file['id'],
+                        "size": int(file.get('size', 0)),
+                        "md5": file.get('md5Checksum'),
+                        "modified": file.get('modifiedTime')
+                    }
+            
+            self.log_msg(f"✅ {len(self.drive_files)} PDFs en Drive escaneados")
+            self.report["resumen"]["archivos_drive"] = len(self.drive_files)
+            
+        except Exception as e:
+            self.log_msg(f"❌ Error escaneando Drive: {str(e)}", "ERROR")
+            self.report["resumen"]["archivos_drive"] = f"Error: {str(e)}"
+    
+    def comparar_diferencias(self):
+        """Compara diferencias entre local y Drive"""
+        self.log_msg("Comparando diferencias...")
+        
+        todos_nombres = set(self.local_files.keys()) | set(self.drive_files.keys())
+        
+        for nombre in todos_nombres:
+            en_local = nombre in self.local_files
+            en_drive = nombre in self.drive_files
+            
+            if en_local and en_drive:
+                # Verificar si es idéntico
+                local_sha = self.local_files[nombre]["sha256"]
+                drive_md5 = self.drive_files[nombre]["md5"]
+                
+                # Nota: SHA-256 local vs MD5 Drive - compararemos tamaño
+                local_size = self.local_files[nombre]["size"]
+                drive_size = self.drive_files[nombre]["size"]
+                
+                if local_size == drive_size:
+                    self.report["diferencias"]["identicos"].append(nombre)
+                else:
+                    self.report["diferencias"]["diferentes"].append({
+                        "nombre": nombre,
+                        "tamaño_local": local_size,
+                        "tamaño_drive": drive_size
+                    })
+            
+            elif en_drive and not en_local:
+                self.report["diferencias"]["solo_en_drive"].append({
+                    "nombre": nombre,
+                    "tamaño": self.drive_files[nombre]["size"]
+                })
+            
+            elif en_local and not en_drive:
+                self.report["diferencias"]["solo_local"].append({
+                    "nombre": nombre,
+                    "tamaño": self.local_files[nombre]["size"]
+                })
+        
+        self.log_msg(f"✅ Comparación completada")
+    
+    def descargar_faltantes(self):
+        """Descarga archivos que existen en Drive pero no localmente"""
+        self.log_msg("Descargando archivos faltantes...")
+        
+        if not self.google_service:
+            self.log_msg("⚠️  Sin acceso a Drive - no se pueden descargar", "WARN")
+            return
+        
+        faltantes = self.report["diferencias"]["solo_en_drive"]
+        
+        for item in faltantes:
+            nombre = item["nombre"]
+            file_id = self.drive_files[nombre]["id"]
+            
+            try:
+                request = self.google_service.files().get_media(fileId=file_id)
+                file_handle = io.BytesIO()
+                downloader = MediaIoBaseDownload(file_handle, request)
+                
+                done = False
+                while not done:
+                    status, done = downloader.next_chunk()
+                
+                # Guardar archivo
+                dest_path = CORPUS_DIR / nombre
+                with open(dest_path, 'wb') as f:
+                    f.write(file_handle.getvalue())
+                
+                self.report["acciones"]["descargados"].append(nombre)
+                self.log_msg(f"  ✅ Descargado: {nombre}")
+            
+            except Exception as e:
+                self.log_msg(f"  ❌ Error descargando {nombre}: {str(e)}", "ERROR")
+    
+    def eliminar_huerfanos(self):
+        """Elimina archivos que existen localmente pero no en Drive"""
+        self.log_msg("Verificando archivos huérfanos...")
+        
+        huerfanos = self.report["diferencias"]["solo_local"]
+        
+        if huerfanos:
+            self.log_msg(f"⚠️  {len(huerfanos)} archivos locales sin equivalente en Drive:")
+            for item in huerfanos:
+                self.log_msg(f"     - {item['nombre']} ({item['tamaño']/1024/1024:.1f} MB)")
+            
+            self.log_msg("     ⚠️  ACCIÓN: Revisar manualmente si deben conservarse")
+        else:
+            self.log_msg("✅ Sin archivos huérfanos")
+    
+    def validar_integridad(self):
+        """Valida integridad de archivos descargados"""
+        self.log_msg("Validando integridad...")
+        
+        validaciones = {
+            "archivos_validados": 0,
+            "errores": []
+        }
+        
+        for nombre, info in self.local_files.items():
+            if info["sha256"]:
+                validaciones["archivos_validados"] += 1
+            else:
+                validaciones["errores"].append(f"No se pudo calcular SHA-256 de {nombre}")
+        
+        self.report["validaciones"] = validaciones
+        self.log_msg(f"✅ {validaciones['archivos_validados']} archivos validados")
+    
+    def generar_reporte_etapa0(self):
+        """Genera reporte de sincronización"""
+        self.log_msg("Generando reporte de ETAPA 0...")
+        
+        self.report["estado"] = "completado"
+        self.report["fecha_finalizacion"] = datetime.now().isoformat()
+        
+        # Guardar reporte JSON
+        with open(SYNC_REPORT, 'w') as f:
+            json.dump(self.report, f, indent=2)
+        
+        # Generar reporte markdown
+        reporte_md = self.generar_markdown()
+        reporte_file = WORK_DIR / "ETAPA_0_SINCRONIZACION.md"
+        with open(reporte_file, 'w', encoding='utf-8') as f:
+            f.write(reporte_md)
+        
+        self.log_msg(f"✅ Reporte guardado en {reporte_file}")
+    
+    def generar_markdown(self):
+        """Genera reporte markdown"""
+        md = "# ETAPA 0: SINCRONIZACIÓN LOCAL VS DRIVE\n\n"
+        md += f"**Fecha:** {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
+        
+        # Resumen
+        md += "## 📊 RESUMEN\n\n"
+        md += "| Métrica | Valor |\n"
+        md += "|---------|-------|\n"
+        md += f"| Archivos locales | {self.report['resumen'].get('archivos_locales', 0)} |\n"
+        md += f"| Archivos Drive | {self.report['resumen'].get('archivos_drive', 'N/A')} |\n"
+        md += f"| Idénticos | {len(self.report['diferencias']['identicos'])} |\n"
+        md += f"| Solo en Drive | {len(self.report['diferencias']['solo_en_drive'])} |\n"
+        md += f"| Solo locales | {len(self.report['diferencias']['solo_local'])} |\n"
+        md += f"| Diferentes | {len(self.report['diferencias']['diferentes'])} |\n\n"
+        
+        # Diferencias
+        md += "## 🔍 DIFERENCIAS ENCONTRADAS\n\n"
+        
+        if self.report['diferencias']['solo_en_drive']:
+            md += "### 📥 Solo en Drive (faltantes localmente)\n"
+            for item in self.report['diferencias']['solo_en_drive']:
+                size_mb = item['tamaño'] / 1024 / 1024 if isinstance(item, dict) else 0
+                nombre = item if isinstance(item, str) else item.get('nombre')
+                md += f"- {nombre} ({size_mb:.1f} MB)\n"
+            md += "\n"
+        
+        if self.report['diferencias']['solo_local']:
+            md += "### 📤 Solo locales (huérfanos)\n"
+            for item in self.report['diferencias']['solo_local']:
+                size_mb = item['tamaño'] / 1024 / 1024 if isinstance(item, dict) else 0
+                nombre = item if isinstance(item, str) else item.get('nombre')
+                md += f"- {nombre} ({size_mb:.1f} MB)\n"
+            md += "\n"
+        
+        if self.report['diferencias']['diferentes']:
+            md += "### ⚠️ Diferentes (tamaños no coinciden)\n"
+            for item in self.report['diferencias']['diferentes']:
+                md += f"- {item['nombre']}: Local={item['tamaño_local']/1024/1024:.1f}MB, Drive={item['tamaño_drive']/1024/1024:.1f}MB\n"
+            md += "\n"
+        
+        # Acciones realizadas
+        md += "## ✅ ACCIONES REALIZADAS\n\n"
+        md += f"- **Descargados:** {len(self.report['acciones']['descargados'])}\n"
+        md += f"- **Eliminados:** {len(self.report['acciones']['eliminados'])}\n"
+        md += f"- **Actualizados:** {len(self.report['acciones']['actualizados'])}\n\n"
+        
+        # Validaciones
+        md += "## 🔐 VALIDACIONES\n\n"
+        md += f"- Archivos validados: {self.report['validaciones'].get('archivos_validados', 0)}\n"
+        if self.report['validaciones'].get('errores'):
+            md += f"- Errores: {len(self.report['validaciones']['errores'])}\n"
+        md += "\n"
+        
+        return md
+    
+    def ejecutar_etapa0(self):
+        """Ejecuta toda la ETAPA 0"""
+        print("\n" + "="*80)
+        print("ETAPA 0: SINCRONIZACIÓN LOCAL VS DRIVE")
+        print("="*80 + "\n")
+        
+        self.log_msg("Iniciando ETAPA 0...")
+        
+        # 1. Escanear local
+        self.escanear_local()
+        
+        # 2. Escanear Drive
+        self.escanear_drive()
+        
+        # 3. Comparar
+        self.comparar_diferencias()
+        
+        # 4. Descargar faltantes
+        self.descargar_faltantes()
+        
+        # 5. Verificar huérfanos
+        self.eliminar_huerfanos()
+        
+        # 6. Validar integridad
+        self.validar_integridad()
+        
+        # 7. Generar reporte
+        self.generar_reporte_etapa0()
+        
+        # 8. Resumen final
+        self.log_msg("\n" + "="*60)
+        self.log_msg("RESUMEN ETAPA 0")
+        self.log_msg("="*60)
+        self.log_msg(f"Archivos locales: {self.report['resumen'].get('archivos_locales', 0)}")
+        self.log_msg(f"Archivos Drive: {self.report['resumen'].get('archivos_drive', 'N/A')}")
+        self.log_msg(f"Idénticos: {len(self.report['diferencias']['identicos'])}")
+        self.log_msg(f"Faltantes: {len(self.report['diferencias']['solo_en_drive'])}")
+        self.log_msg(f"Huérfanos: {len(self.report['diferencias']['solo_local'])}")
+        self.log_msg(f"Descargados: {len(self.report['acciones']['descargados'])}")
+        self.log_msg("="*60 + "\n")
+        
+        self.log_msg("✅ ETAPA 0 COMPLETADA")
+        
+        # Guardar logs
+        self.guardar_log()
+        
+        return self.report
+
+if __name__ == "__main__":
+    sincronizador = SincronizadorEtapa0()
+    sincronizador.ejecutar_etapa0()

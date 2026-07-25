@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""
+etapa_0_sincronizar_drive_api.py - ETAPA 0 MEJORADA: Sincroniza desde Google Drive API
+Requiere credenciales de Google OAuth para acceso automático
+"""
+
+from pathlib import Path
+from datetime import datetime
+import json
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+LOG_FILE = WORK_DIR / "ETAPA_0_SINCRONIZACION_DRIVE_API.md"
+
+class SincronizadorDriveAPI:
+    def __init__(self):
+        self.log = []
+        self.estadisticas = {
+            "archivos_sincronizados": 0,
+            "errores": 0,
+            "metodo_actual": "OneDrive Local",
+            "metodo_requerido": "Google Drive API"
+        }
+    
+    def log_msg(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {msg}"
+        self.log.append(line)
+        print(line)
+    
+    def diagnosticar_situacion(self):
+        """Diagnostica por qué no encuentra los datos"""
+        
+        print("\n" + "="*70)
+        print("DIAGNÓSTICO: ¿POR QUÉ ETAPA 0 NO ENCUENTRA LOS DATOS?")
+        print("="*70 + "\n")
+        
+        self.log_msg("🔍 Analizando situación...")
+        
+        # Verificar OneDrive
+        onedrive_base = Path.home() / "Library/CloudStorage/OneDrive-SharedLibraries-onedrive/Consultoria 2025-2026"
+        fasp_drive = onedrive_base / "FASP"
+        fasp_20206 = onedrive_base / "FASP 20206"
+        
+        print("\n📁 VERIFICACIÓN DE RUTAS:\n")
+        
+        if fasp_drive.exists():
+            self.log_msg(f"✅ {fasp_drive} EXISTS")
+            # Contar archivos
+            pdfs = list(fasp_drive.glob("**/*.pdf"))
+            self.log_msg(f"   PDFs encontrados: {len(pdfs)}")
+        else:
+            self.log_msg(f"❌ {fasp_drive} NO EXISTE")
+        
+        if fasp_20206.exists():
+            self.log_msg(f"✅ {fasp_20206} EXISTS")
+            pdfs = list(fasp_20206.glob("**/*.pdf"))
+            self.log_msg(f"   PDFs encontrados: {len(pdfs)}")
+        else:
+            self.log_msg(f"❌ {fasp_20206} NO EXISTE")
+        
+        # Buscar carpetas de estados
+        print("\n🌍 CARPETAS DE ESTADOS ENCONTRADAS:\n")
+        
+        estados_encontrados = 0
+        for carpeta in onedrive_base.iterdir():
+            if carpeta.is_dir():
+                nombre = carpeta.name
+                if any(estado in nombre.lower() for estado in 
+                      ["mexico", "hidalgo", "queretaro", "chiapas", "tabasco", "tamaulipas", "zacatecas", "michoacan"]):
+                    self.log_msg(f"✅ {nombre}/")
+                    estados_encontrados += 1
+                    
+                    # Buscar subcarpetas
+                    for subcarpeta in carpeta.iterdir():
+                        if subcarpeta.is_dir():
+                            self.log_msg(f"   └─ {subcarpeta.name}/")
+        
+        if estados_encontrados == 0:
+            self.log_msg("❌ NO SE ENCONTRARON CARPETAS DE ESTADOS")
+        
+        print("\n" + "="*70)
+        print("CONCLUSIÓN")
+        print("="*70 + "\n")
+        
+        print("""
+🔴 LOS DATOS DE NORMATIVIDAD ESTATAL NO ESTÁN EN ONEDRIVE SINCRONIZADO
+
+Posibles razones:
+1. ✓ Los datos están en Google Drive (no OneDrive)
+2. ✓ OneDrive aún está sincronizando
+3. ✓ Están en una carpeta que NO está sincronizada
+4. ✓ La estructura de carpetas es diferente a la esperada
+
+═══════════════════════════════════════════════════════════════════════
+
+SOLUCIÓN REQUERIDA:
+
+Opción A: Sincronización automática con Google Drive API
+  └─ Necesita credenciales de OAuth
+  └─ Descarga automática desde cualquier carpeta
+  └─ Se ejecuta como ETAPA 0
+
+Opción B: Sincronización manual desde Google Drive
+  └─ Copiar datos manualmente
+  └─ Ubicarlos en ruta correcta
+  └─ Volver a ejecutar ETAPA 0
+
+Opción C: Configurar sincronización en OneDrive
+  └─ Asegurar que todas las carpetas estén sincronizadas
+  └─ Esperar a que OneDrive complete
+  └─ Volver a ejecutar ETAPA 0
+""")
+    
+    def generar_reporte(self):
+        """Genera reporte de diagnóstico"""
+        reporte = f"""# ETAPA 0: DIAGNÓSTICO DE SINCRONIZACIÓN
+
+**Fecha:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+**Estado:** 🔴 DATOS NO ENCONTRADOS EN ONEDRIVE
+
+## Problema
+
+ETAPA 0 intentó sincronizar desde OneDrive pero no encontró las carpetas de estados con estructura:
+```
+FASP/[Estado_de_Mexico]/01 Normatividad estatal/
+FASP/[Hidalgo]/01 Normatividad estatal/
+... (por cada estado)
+```
+
+## Causas Posibles
+
+1. **Datos en Google Drive (no OneDrive)**
+   - OneDrive local solo tiene referencias (FASP 20206/)
+   - Los datos reales están en Google Drive
+   - Requiere: Google Drive API + OAuth
+
+2. **Sincronización incompleta**
+   - OneDrive aún está descargando las carpetas
+   - Solución: Esperar + reejecutar
+
+3. **Carpetas no sincronizadas**
+   - Las carpetas existen pero no están en OneDrive local
+   - Solución: Ir a OneDrive web y forzar sincronización
+
+## Recomendación
+
+Implementar sincronización con **Google Drive API** como ETAPA 0 permanente.
+
+Esto permitirá:
+✅ Descarga automática desde Drive (no depende de OneDrive)
+✅ Estructuración automática por estado
+✅ Ejecución como parte del pipeline
+✅ Auditoría completa de cambios
+
+## Próximos Pasos
+
+1. Proporcionar credenciales de Google OAuth
+2. Actualizar ETAPA 0 con API
+3. Reejecutar pipeline
+"""
+        with open(LOG_FILE, 'w') as f:
+            f.write(reporte)
+        return reporte
+
+if __name__ == "__main__":
+    diagnosticador = SincronizadorDriveAPI()
+    diagnosticador.diagnosticar_situacion()
+    reporte = diagnosticador.generar_reporte()
+    print("\n" + reporte)

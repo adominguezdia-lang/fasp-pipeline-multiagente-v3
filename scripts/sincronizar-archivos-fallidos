@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""
+sincronizar_archivos_fallidos.py - Reintenta descargar archivos que fallaron
+Maneja Google Docs exportándolos como PDF
+"""
+
+import sys
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
+import json
+from pathlib import Path
+from datetime import datetime
+
+TOKEN_PATH = Path.home() / ".hermes/google_token.json"
+FASP_LOCAL = Path("/Users/adominguezdia/Documents/FASP/09 FASP")
+DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+
+def autenticar_drive():
+    """Autentica con Google Drive"""
+    try:
+        if not TOKEN_PATH.exists():
+            log_msg(f"❌ Token no encontrado: {TOKEN_PATH}", "ERROR")
+            return None
+        
+        with open(TOKEN_PATH, 'r') as f:
+            token_data = json.load(f)
+        
+        creds = Credentials.from_authorized_user_info(token_data)
+        
+        if creds.expired and creds.refresh_token:
+            log_msg("🔄 Renovando token...")
+            creds.refresh(Request())
+        
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        log_msg(f"❌ Error autenticando: {str(e)}", "ERROR")
+        return None
+
+def exportar_google_doc(service, file_id, file_name, dest_path):
+    """Exporta un Google Doc como PDF"""
+    try:
+        log_msg(f"📤 Exportando Google Doc: {file_name}")
+        
+        # Exportar como PDF
+        request = service.files().export_media(
+            fileId=file_id,
+            mimeType='application/pdf'
+        )
+        
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        
+        while not done:
+            status, done = downloader.next_chunk()
+        
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Guardar con extensión .pdf
+        pdf_name = f"{file_name.replace('.', '_')}.pdf"
+        pdf_path = dest_path.parent / pdf_name
+        
+        with open(pdf_path, 'wb') as f:
+            f.write(fh.getvalue())
+        
+        log_msg(f"✅ Exportado como PDF: {pdf_name}")
+        return True
+    except Exception as e:
+        log_msg(f"❌ Error exportando: {str(e)}", "ERROR")
+        return False
+
+def buscar_archivo_por_nombre(service, parent_id, nombre_archivo):
+    """Busca un archivo por nombre en una carpeta"""
+    try:
+        query = f"'{parent_id}' in parents and name='{nombre_archivo}' and trashed=false"
+        results = service.files().list(
+            q=query,
+            spaces='drive',
+            fields='files(id, name, mimeType)',
+            pageSize=10
+        ).execute()
+        
+        items = results.get('files', [])
+        return items[0] if items else None
+    except Exception as e:
+        log_msg(f"❌ Error buscando archivo: {str(e)}", "ERROR")
+        return None
+
+def sincronizar_errores(carpeta_nombre, archivos_fallidos):
+    """Sincroniza archivos que fallaron previamente"""
+    
+    print("\n" + "="*80)
+    print(f"SINCRONIZANDO ERRORES: {carpeta_nombre}")
+    print("="*80 + "\n")
+    
+    log_msg(f"Archivos a sincronizar: {len(archivos_fallidos)}")
+    
+    service = autenticar_drive()
+    if not service:
+        return False
+    
+    # Buscar carpeta
+    log_msg(f"🔍 Buscando carpeta '{carpeta_nombre}'...")
+    query = f"'{DRIVE_FOLDER_ID}' in parents and name='{carpeta_nombre}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    results = service.files().list(q=query, spaces='drive', fields='files(id, name)', pageSize=10).execute()
+    items = results.get('files', [])
+    
+    if not items:
+        log_msg(f"❌ Carpeta no encontrada", "ERROR")
+        return False
+    
+    carpeta_id = items[0]['id']
+    log_msg(f"✅ Encontrada: {items[0]['name']}")
+    
+    descargados = 0
+    errores = 0
+    
+    # Procesar cada archivo fallido
+    for archivo_info in archivos_fallidos:
+        if isinstance(archivo_info, str):
+            nombre_archivo = archivo_info
+            subcarpeta = None
+        else:
+            nombre_archivo = archivo_info.get('nombre')
+            subcarpeta = archivo_info.get('subcarpeta')
+        
+        log_msg(f"\n🔍 Buscando: {nombre_archivo}")
+        
+        # Buscar archivo en Drive
+        archivo_drive = buscar_archivo_por_nombre(service, carpeta_id, nombre_archivo)
+        
+        if not archivo_drive:
+            log_msg(f"❌ Archivo no encontrado en Drive", "WARN")
+            errores += 1
+            continue
+        
+        log_msg(f"✅ Encontrado (ID: {archivo_drive['id']}, tipo: {archivo_drive['mimeType']})")
+        
+        # Determinar ruta local
+        if subcarpeta:
+            dest_dir = FASP_LOCAL / carpeta_nombre / subcarpeta
+        else:
+            dest_dir = FASP_LOCAL / carpeta_nombre
+        
+        dest_path = dest_dir / nombre_archivo
+        
+        # Si es Google Docs, exportar
+        if 'vnd.google-apps' in archivo_drive['mimeType']:
+            log_msg(f"📄 Es Google Docs - exportando como PDF...")
+            if exportar_google_doc(service, archivo_drive['id'], nombre_archivo, dest_path):
+                descargados += 1
+            else:
+                errores += 1
+        else:
+            # Descargar como archivo normal
+            log_msg(f"📥 Descargando archivo...")
+            try:
+                request = service.files().get_media(fileId=archivo_drive['id'])
+                fh = io.BytesIO()
+                downloader = MediaIoBaseDownload(fh, request)
+                done = False
+                
+                while not done:
+                    status, done = downloader.next_chunk()
+                
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                with open(dest_path, 'wb') as f:
+                    f.write(fh.getvalue())
+                
+                log_msg(f"✅ Descargado correctamente")
+                descargados += 1
+            except Exception as e:
+                log_msg(f"❌ Error descargando: {str(e)}", "ERROR")
+                errores += 1
+    
+    # Resumen
+    print(f"\n{'='*80}")
+    print("RESUMEN")
+    print(f"{'='*80}")
+    print(f"✅ Descargados/Exportados: {descargados}")
+    print(f"❌ Errores: {errores}")
+    
+    return errores == 0
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print("❌ Uso: python3 sincronizar_archivos_fallidos.py 'carpeta' 'archivo1' 'archivo2' ...")
+        print("")
+        print("Ejemplo:")
+        print("  python3 sincronizar_archivos_fallidos.py '01 EdoMex Nancy G' 'TDR EDOMX'")
+        print("  python3 sincronizar_archivos_fallidos.py '00 Bibliografía y normatividad federal' 'FASP Registro Normatividad'")
+        sys.exit(1)
+    
+    carpeta_nombre = sys.argv[1]
+    archivos_fallidos = sys.argv[2:]
+    
+    exito = sincronizar_errores(carpeta_nombre, archivos_fallidos)
+    sys.exit(0 if exito else 1)

@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""
+etapa_4_distribucion_por_estado.py - ETAPA 4: Distribución por estado
+Distribuye PDFs de corpusintegrado/ a carpetas por estado
+"""
+
+from pathlib import Path
+from datetime import datetime
+import shutil
+import json
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+CORPUS_DIR = WORK_DIR / "corpusintegrado"
+ESTADOS_DIR = WORK_DIR / "corpus_por_estado_v2"
+LOG_FILE = WORK_DIR / "logs" / f"etapa_4_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+# Mapeo de códigos de estado
+ESTADOS_MAP = {
+    "MEX": "Estado_de_Mexico",
+    "HID": "Hidalgo",
+    "QRO": "Queretaro",
+    "MIC": "Michoacan",
+    "CHI": "Chiapas",
+    "TAB": "Tabasco",
+    "TAM": "Tamaulipas",
+    "ZAC": "Zacatecas",
+}
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    with open(LOG_FILE, 'a') as f:
+        f.write(line + "\n")
+
+print("\n" + "="*80)
+print("ETAPA 4: DISTRIBUCIÓN POR ESTADO")
+print("="*80)
+
+try:
+    log_msg("Iniciando distribución por estado...")
+    
+    # Crear estructura de carpetas
+    log_msg("📁 Creando estructura de carpetas...")
+    ESTADOS_DIR.mkdir(exist_ok=True)
+    
+    # Crear carpeta compartida
+    compartida_dir = ESTADOS_DIR / "00_Compartida"
+    compartida_dir.mkdir(exist_ok=True)
+    
+    # Crear carpetas por estado
+    for estado_name in ESTADOS_MAP.values():
+        estado_dir = ESTADOS_DIR / estado_name
+        estado_dir.mkdir(exist_ok=True)
+        
+        # Crear subcarpetas
+        (estado_dir / "00_Otros").mkdir(exist_ok=True)
+        (estado_dir / "01_TDR").mkdir(exist_ok=True)
+        (estado_dir / "02_Normatividad_Estatal").mkdir(exist_ok=True)
+    
+    log_msg("✅ Estructura de carpetas creada")
+    
+    # Estadísticas
+    stats = {estado: {"count": 0, "files": []} for estado in ESTADOS_MAP.values()}
+    compartida_count = 0
+    compartida_files = []
+    
+    log_msg("📋 Distribuying PDFs...")
+    
+    # Distribuir PDFs
+    for pdf in CORPUS_DIR.glob("*.pdf"):
+        if pdf.name == "manifest.json":
+            continue
+        
+        pdf_name = pdf.name
+        copiado = False
+        
+        # Buscar código de estado
+        for code, estado_name in ESTADOS_MAP.items():
+            if f"_{code}_" in pdf_name:
+                # Determinar subcarpeta
+                if "TDR" in pdf_name:
+                    dest_dir = ESTADOS_DIR / estado_name / "01_TDR"
+                elif any(x in pdf_name for x in ["PLAN", "Reglamento", "LEY", "MANUAL", "GUIA", "TRANSPARENCIA", "RESPONSABILIDADES", "ORGANICA", "NORFED", "INFORME"]):
+                    dest_dir = ESTADOS_DIR / estado_name / "02_Normatividad_Estatal"
+                else:
+                    dest_dir = ESTADOS_DIR / estado_name / "00_Otros"
+                
+                shutil.copy2(pdf, dest_dir / pdf_name)
+                stats[estado_name]["count"] += 1
+                stats[estado_name]["files"].append(pdf_name)
+                copiado = True
+                break
+        
+        # Si no tiene código de estado, va a compartida
+        if not copiado:
+            shutil.copy2(pdf, compartida_dir / pdf_name)
+            compartida_count += 1
+            compartida_files.append(pdf_name)
+    
+    log_msg("✅ Distribución completada")
+    
+    # Resumen
+    log_msg("\n📊 RESUMEN DE DISTRIBUCIÓN:")
+    total_dist = 0
+    for estado, data in sorted(stats.items()):
+        if data["count"] > 0:
+            log_msg(f"  {estado}: {data['count']} PDFs")
+            total_dist += data["count"]
+    
+    log_msg(f"  00_Compartida: {compartida_count} PDFs")
+    log_msg(f"  TOTAL: {total_dist + compartida_count} PDFs")
+    
+    # Verificación final
+    log_msg("\n✅ Verificación final:")
+    for estado_name in ESTADOS_MAP.values():
+        estado_path = ESTADOS_DIR / estado_name
+        count = len(list(estado_path.rglob("*.pdf")))
+        if count > 0:
+            log_msg(f"  {estado_name}: {count} PDFs")
+    
+    compartida_count_verify = len(list(compartida_dir.glob("*.pdf")))
+    log_msg(f"  00_Compartida: {compartida_count_verify} PDFs")
+    
+    log_msg("✅ ETAPA 4 COMPLETADA - Distribución exitosa")
+    
+    print("\n✅ ETAPA 4 FINALIZADA")
+    print(f"Log guardado: {LOG_FILE}")
+    print(f"Estructura creada en: {ESTADOS_DIR}")
+    
+except Exception as e:
+    log_msg(f"❌ Error en ETAPA 4: {str(e)}", "ERROR")
+    raise

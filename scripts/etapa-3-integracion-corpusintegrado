@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""
+etapa_3_integracion_corpusintegrado.py - ETAPA 3: Integración a corpusintegrado/
+Copia PDFs renombrados de /09 FASP/ a corpusintegrado/ (fuente única)
+"""
+
+from pathlib import Path
+from datetime import datetime
+import shutil
+import json
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+FASP_LOCAL = WORK_DIR / "09 FASP"
+CORPUS_DIR = WORK_DIR / "corpusintegrado"
+LOG_FILE = WORK_DIR / "logs" / f"etapa_3_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+    LOG_FILE.parent.mkdir(exist_ok=True)
+    with open(LOG_FILE, 'a') as f:
+        f.write(line + "\n")
+
+print("\n" + "="*80)
+print("ETAPA 3: INTEGRACIÓN A corpusintegrado/")
+print("="*80)
+
+try:
+    log_msg("Iniciando integración a corpusintegrado/...")
+    
+    # Backup de corpusintegrado actual
+    if CORPUS_DIR.exists():
+        backup_dir = WORK_DIR / ".archive" / f"corpus_backup_etapa3_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        log_msg(f"📦 Creando backup en {backup_dir.name}...")
+        
+        for pdf in CORPUS_DIR.glob("*.pdf"):
+            shutil.copy2(pdf, backup_dir)
+        
+        log_msg(f"✅ Backup creado: {len(list(backup_dir.glob('*.pdf')))} PDFs")
+    
+    # Vaciar corpusintegrado
+    log_msg("🧹 Vaciando corpusintegrado/...")
+    CORPUS_DIR.mkdir(exist_ok=True)
+    for pdf in CORPUS_DIR.glob("*.pdf"):
+        pdf.unlink()
+    for json_file in CORPUS_DIR.glob("*.json"):
+        json_file.unlink()
+    log_msg("✅ Directorio limpio")
+    
+    # Copiar PDFs de /09 FASP/ recursivamente
+    log_msg("📋 Escaneando TODOS los archivos en /09 FASP/...")
+    archivos_encontrados = list(FASP_LOCAL.rglob("*"))
+    archivos_encontrados = [f for f in archivos_encontrados if f.is_file()]
+    log_msg(f"✅ Encontrados {len(archivos_encontrados)} archivos")
+    
+    log_msg("📥 Copiando TODOS los archivos a corpusintegrado/...")
+    copied = 0
+    for archivo in archivos_encontrados:
+        try:
+            shutil.copy2(archivo, CORPUS_DIR / archivo.name)
+            copied += 1
+            if copied % 10 == 0:
+                log_msg(f"  Copiados: {copied}/{len(archivos_encontrados)}")
+        except Exception as e:
+            log_msg(f"⚠️  Error copiando {archivo.name}: {str(e)}", "WARN")
+    
+    log_msg(f"✅ Copias completadas: {copied} archivos")
+    
+    # Verificar que no hay duplicados
+    copias = list(CORPUS_DIR.glob("*"))
+    copias = [f for f in copias if f.is_file()]
+    unicos = set(p.name for p in copias)
+    
+    if len(copias) == len(unicos):
+        log_msg(f"✅ Verificación: {len(unicos)} PDFs únicos (sin duplicados)")
+    else:
+        log_msg(f"⚠️  Verificación: {len(copias)} PDFs, {len(unicos)} únicos", "WARN")
+    
+    # Crear manifest.json
+    manifest = {
+        "timestamp": datetime.now().isoformat(),
+        "total_pdfs": len(unicos),
+        "origen": str(FASP_LOCAL),
+        "pdfs": sorted([p.name for p in copias])
+    }
+    
+    manifest_path = CORPUS_DIR / "manifest.json"
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+    
+    log_msg(f"✅ Manifest creado: manifest.json")
+    log_msg("✅ ETAPA 3 COMPLETADA - Integración exitosa")
+    
+    print("\n✅ ETAPA 3 FINALIZADA")
+    print(f"Log guardado: {LOG_FILE}")
+    print(f"PDFs en corpusintegrado: {len(unicos)}")
+    
+except Exception as e:
+    log_msg(f"❌ Error en ETAPA 3: {str(e)}", "ERROR")
+    raise

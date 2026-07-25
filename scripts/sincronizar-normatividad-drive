@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""
+sincronizar_normatividad_drive.py - Sincroniza normatividad completa desde Google Drive
+Descarga TODOS los PDFs de normatividad estatal de cada estado
+"""
+
+from pathlib import Path
+import shutil
+from datetime import datetime
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+DRIVE_BASE = Path.home() / "Library/CloudStorage/OneDrive-SharedLibraries-onedrive/Consultoria 2025-2026"
+FASP_20206 = DRIVE_BASE / "FASP 20206"
+
+# Mapeo de estados con carpetas en Drive
+ESTADOS_DRIVE = {
+    "Estado_de_Mexico": "Estado de Mexico",
+    "Hidalgo": "Hidalgo",
+    "Queretaro": "Querétaro",
+    "Chiapas": "Chiapas",
+    "Tabasco": "Tabasco",
+    "Tamaulipas": "Tamaulipas",
+    "Zacatecas": "Zacatecas",
+    "Michoacan": "Michoacán",
+}
+
+class SincronizadorNormatividad:
+    def __init__(self):
+        self.log = []
+        self.estadisticas = {
+            "estados_procesados": 0,
+            "archivos_descargados": 0,
+            "errores": 0
+        }
+    
+    def log_msg(self, msg):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        line = f"[{timestamp}] {msg}"
+        self.log.append(line)
+        print(line)
+    
+    def verificar_drive(self):
+        """Verifica que exista carpeta de Drive"""
+        self.log_msg("🔍 Verificando acceso a Google Drive...")
+        
+        if not FASP_20206.exists():
+            self.log_msg(f"❌ FASP 20206 NO EXISTE en: {FASP_20206}")
+            self.log_msg("   Verifica que OneDrive esté sincronizado")
+            return False
+        
+        self.log_msg(f"✅ FASP 20206 encontrado")
+        return True
+    
+    def sincronizar_estado(self, estado_local, estado_drive):
+        """Sincroniza normatividad de un estado desde Drive"""
+        
+        try:
+            # Carpeta en Drive
+            carpeta_normatividad = FASP_20206 / estado_drive / "01 Normatividad estatal"
+            
+            if not carpeta_normatividad.exists():
+                self.log_msg(f"  ⚠️  {estado_drive}: Carpeta 01 Normatividad estatal NO EXISTE")
+                return 0
+            
+            # Carpeta destino en local
+            carpeta_destino = WORK_DIR / "corpus_por_estado_v2" / estado_local / "02_Normatividad_Estatal"
+            carpeta_destino.mkdir(parents=True, exist_ok=True)
+            
+            # Listar PDFs en Drive
+            pdfs_drive = list(carpeta_normatividad.glob("*.pdf"))
+            
+            if not pdfs_drive:
+                self.log_msg(f"  ℹ️  {estado_drive}: Sin PDFs en 01 Normatividad estatal/")
+                return 0
+            
+            self.log_msg(f"  📥 {estado_drive}: Encontrados {len(pdfs_drive)} PDFs")
+            
+            # Copiar archivos
+            copiados = 0
+            for pdf_drive in pdfs_drive:
+                try:
+                    destino = carpeta_destino / pdf_drive.name
+                    
+                    # Copiar si no existe o es más nuevo
+                    if not destino.exists() or pdf_drive.stat().st_mtime > destino.stat().st_mtime:
+                        shutil.copy2(pdf_drive, destino)
+                        copiados += 1
+                        self.log_msg(f"     ✅ {pdf_drive.name} ({pdf_drive.stat().st_size / 1024 / 1024:.1f} MB)")
+                    else:
+                        self.log_msg(f"     ℹ️  {pdf_drive.name} (ya existe)")
+                
+                except Exception as e:
+                    self.log_msg(f"     ❌ Error copiando {pdf_drive.name}: {str(e)}")
+                    self.estadisticas["errores"] += 1
+            
+            return copiados
+        
+        except Exception as e:
+            self.log_msg(f"  ❌ Error sincronizando {estado_local}: {str(e)}")
+            self.estadisticas["errores"] += 1
+            return 0
+    
+    def ejecutar_sincronizacion(self):
+        """Ejecuta sincronización completa"""
+        print("\n" + "="*70)
+        print("SINCRONIZACIÓN DE NORMATIVIDAD DESDE GOOGLE DRIVE")
+        print("="*70 + "\n")
+        
+        # Verificar Drive
+        if not self.verificar_drive():
+            self.log_msg("❌ NO SE PUEDE ACCEDER A DRIVE")
+            return False
+        
+        self.log_msg("\n📥 Sincronizando normatividad estatal por estado...\n")
+        
+        # Sincronizar cada estado
+        total_copiados = 0
+        for estado_local, estado_drive in ESTADOS_DRIVE.items():
+            copiados = self.sincronizar_estado(estado_local, estado_drive)
+            total_copiados += copiados
+            self.estadisticas["archivos_descargados"] += copiados
+            self.estadisticas["estados_procesados"] += 1
+        
+        # Resumen
+        print("\n" + "="*70)
+        print("RESUMEN DE SINCRONIZACIÓN")
+        print("="*70)
+        self.log_msg(f"\nEstados procesados: {self.estadisticas['estados_procesados']}")
+        self.log_msg(f"Archivos descargados: {self.estadisticas['archivos_descargados']}")
+        self.log_msg(f"Errores: {self.estadisticas['errores']}")
+        
+        if self.estadisticas['archivos_descargados'] > 0:
+            self.log_msg(f"\n✅ SINCRONIZACIÓN COMPLETADA")
+            self.log_msg(f"   {self.estadisticas['archivos_descargados']} archivos nuevos/actualizados")
+            return True
+        else:
+            self.log_msg(f"\nℹ️  No hay archivos nuevos para sincronizar")
+            return True
+
+if __name__ == "__main__":
+    sincronizador = SincronizadorNormatividad()
+    sincronizador.ejecutar_sincronizacion()

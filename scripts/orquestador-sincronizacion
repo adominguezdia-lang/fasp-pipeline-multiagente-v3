@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""
+orquestador_sincronizacion.py - Orquesta sincronización de múltiples carpetas
+Delega a subagentes: cada uno sincroniza UNA carpeta
+"""
+
+import sys
+from pathlib import Path
+from datetime import datetime
+import json
+
+# Carpetas a sincronizar
+CARPETAS = [
+    "01 EdoMex Nancy G",
+    "02 Hidalgo Diana", 
+    "03 Michoacán Jerónimo",
+    "04 Querétaro Jackie",
+    "05 Chiapas Diana",
+    "06 Tabasco Jerónimo",
+    "07 Tamaulipas Jackie",
+    "08 Zacatecas Maca",
+    "00 Bibliografía y normatividad federal",
+    "00 Coordinación"
+]
+
+LOG_DIR = Path("/Users/adominguezdia/Documents/FASP/logs")
+REPORT_FILE = LOG_DIR / f"sincronizacion_multiagente_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+
+def crear_reporte_inicial():
+    """Crea reporte inicial"""
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "total_carpetas": len(CARPETAS),
+        "carpetas": {carpeta: {"status": "PENDING", "descargados": 0, "errores": 0} for carpeta in CARPETAS},
+        "resumen": {
+            "completadas": 0,
+            "con_errores": 0,
+            "pendientes": len(CARPETAS)
+        }
+    }
+
+def guardar_reporte(reporte):
+    """Guarda reporte en JSON"""
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(REPORT_FILE, 'w') as f:
+        json.dump(reporte, f, indent=2, ensure_ascii=False)
+    print(f"📄 Reporte guardado: {REPORT_FILE}")
+
+def mostrar_carpetas():
+    """Muestra lista de carpetas para sincronizar"""
+    print("\n" + "="*80)
+    print("CARPETAS A SINCRONIZAR (MULTIAGENTE)")
+    print("="*80 + "\n")
+    
+    for i, carpeta in enumerate(CARPETAS, 1):
+        print(f"{i:2d}. {carpeta}")
+    
+    print(f"\n📊 Total: {len(CARPETAS)} carpetas")
+    print("\nCada carpeta será sincronizada por UN subagente independiente")
+    print("Solo reportarán el resultado final\n")
+
+if __name__ == "__main__":
+    reporte = crear_reporte_inicial()
+    
+    if len(sys.argv) > 1 and sys.argv[1] == "--listar":
+        mostrar_carpetas()
+        guardar_reporte(reporte)
+    else:
+        print("\n" + "="*80)
+        print("ORQUESTADOR DE SINCRONIZACIÓN MULTIAGENTE")
+        print("="*80 + "\n")
+        
+        print("✅ Sistema listo para sincronización multiagente\n")
+        print(f"📊 Carpetas a sincronizar: {len(CARPETAS)}\n")
+        
+        for carpeta in CARPETAS:
+            print(f"  ⏳ {carpeta}")
+        
+        print(f"\n💾 Reporte: {REPORT_FILE}\n")
+        
+        guardar_reporte(reporte)

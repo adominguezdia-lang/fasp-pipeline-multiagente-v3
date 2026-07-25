@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+etapa_0_sincronizar_google_drive_api.py - ETAPA 0: Sincroniza desde Google Drive usando API
+Usa las MISMAS credenciales que descargar-plan-desarrollo (comprobadas funcionan)
+"""
+
+import json
+import subprocess
+from pathlib import Path
+from datetime import datetime
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseDownload
+import io
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONFIGURACIÓN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+TOKEN_PATH = Path.home() / ".hermes" / "google_token.json"
+CORPUS_INTEGRADO = WORK_DIR / "corpusintegrado"
+LOG_FILE = WORK_DIR / "etapa_0_sync_api.log"
+
+DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"  # 09 FASP
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUNCIONES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def log_msg(msg):
+    """Log con timestamp"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = f"[{timestamp}] {msg}"
+    print(log_entry)
+    with open(LOG_FILE, 'a') as f:
+        f.write(log_entry + "\n")
+
+def get_drive_service():
+    """Obtiene cliente de Google Drive usando las mismas credenciales"""
+    try:
+        if TOKEN_PATH.exists():
+            with open(TOKEN_PATH) as f:
+                creds_json = json.load(f)
+            
+            log_msg(f"✅ Token cargado: {TOKEN_PATH}")
+            
+            creds = Credentials.from_authorized_user_info(creds_json)
+            if creds.expired and creds.refresh_token:
+                log_msg("🔄 Renovando token...")
+                creds.refresh(Request())
+            
+            return build('drive', 'v3', credentials=creds)
+        else:
+            log_msg(f"❌ No encontrado: {TOKEN_PATH}")
+            return None
+    except Exception as e:
+        log_msg(f"❌ Error al autenticar: {str(e)}")
+        return None
+
+def list_files_recursive(service, parent_id, path_prefix=""):
+    """Lista todos los archivos recursivamente desde un folder"""
+    files_found = []
+    
+    try:
+        query = f"'{parent_id}' in parents and trashed=false"
+        page_token = None
+        
+        while True:
+            results = service.files().list(
+                q=query,
+                spaces='drive',
+                fields='files(id, name, mimeType, size)',
+                pageSize=1000,
+                pageToken=page_token
+            ).execute()
+            
+            items = results.get('files', [])
+            
+            for item in items:
+                current_path = f"{path_prefix}/{item['name']}" if path_prefix else item['name']
+                
+                if item['mimeType'] == 'application/vnd.google-apps.folder':
+                    # Es carpeta - recursión
+                    log_msg(f"📁 Entrando en: {current_path}")
+                    subfolder_files = list_files_recursive(service, item['id'], current_path)
+                    files_found.extend(subfolder_files)
+                elif item['mimeType'] == 'application/pdf' or item['name'].endswith('.pdf'):
+                    # Es PDF
+                    files_found.append({
+                        'id': item['id'],
+                        'name': item['name'],
+                        'path': current_path,
+                        'size': int(item.get('size', 0))
+                    })
+            
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
+    
+    except Exception as e:
+        log_msg(f"⚠️  Error listando: {str(e)}")
+    
+    return files_found
+
+def download_file(service, file_id, filename, output_dir):
+    """Descarga un archivo desde Drive"""
+    try:
+        request = service.files().get_media(fileId=file_id)
+        file_path = output_dir / filename
+        
+        with open(file_path, 'wb') as fh:
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+        
+        log_msg(f"✅ Descargado: {filename}")
+        return True
+    
+    except Exception as e:
+        log_msg(f"❌ Error descargando {filename}: {str(e)}")
+        return False
+
+def sync_from_drive():
+    """Sincroniza archivos desde Google Drive"""
+    log_msg("\n" + "="*80)
+    log_msg("ETAPA 0: SINCRONIZACIÓN DESDE GOOGLE DRIVE (API)")
+    log_msg("="*80)
+    
+    # Crear corpus si no existe
+    CORPUS_INTEGRADO.mkdir(parents=True, exist_ok=True)
+    
+    # Obtener cliente de Drive
+    service = get_drive_service()
+    if not service:
+        log_msg("❌ No se pudo autenticar con Google Drive")
+        return False
+    
+    log_msg(f"\n🔍 Buscando archivos en carpeta {DRIVE_FOLDER_ID}...")
+    
+    # Listar todos los archivos
+    all_files = list_files_recursive(service, DRIVE_FOLDER_ID)
+    
+    if not all_files:
+        log_msg("⚠️  No se encontraron archivos PDF en Drive")
+        return True  # No es error - podría estar vacía
+    
+    log_msg(f"\n📊 Encontrados {len(all_files)} archivos")
+    
+    # Descargar PDFs nuevos
+    downloaded_count = 0
+    for file_info in all_files:
+        file_path = CORPUS_INTEGRADO / file_info['name']
+        
+        # Verificar si ya existe
+        if file_path.exists():
+            log_msg(f"⏭️  Ya existe: {file_info['name']}")
+        else:
+            log_msg(f"📥 Descargando: {file_info['name']} ({file_info['size'] / 1024 / 1024:.1f} MB)")
+            if download_file(service, file_info['id'], file_info['name'], CORPUS_INTEGRADO):
+                downloaded_count += 1
+    
+    log_msg(f"\n✅ Descargados: {downloaded_count} archivos nuevos")
+    log_msg("✅ ETAPA 0 completada exitosamente")
+    
+    return True
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if __name__ == "__main__":
+    try:
+        success = sync_from_drive()
+        exit(0 if success else 1)
+    except KeyboardInterrupt:
+        log_msg("❌ Cancelado por usuario")
+        exit(1)
+    except Exception as e:
+        log_msg(f"❌ Error fatal: {str(e)}")
+        import traceback
+        log_msg(traceback.format_exc())
+        exit(1)

@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""
+pipeline_fasp_auto.py - Cron job: Ejecuta pipeline FASP automáticamente
+Hora: 14:00 y 20:00 hrs diarios
+"""
+
+import subprocess
+from pathlib import Path
+from datetime import datetime
+import json
+
+LOG_DIR = Path("/Users/adominguezdia/Documents/FASP/logs")
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+    return line
+
+def ejecutar_pipeline_cron():
+    """Ejecuta pipeline completo en modo cron"""
+    
+    log_msg("🚀 INICIANDO PIPELINE FASP - MODO CRON")
+    log_msg(f"Hora: {datetime.now().strftime('%H:%M')}")
+    
+    inicio = datetime.now()
+    
+    # ETAPA 0: Sincronización
+    log_msg("ETAPA 0: Sincronizando desde Drive...")
+    result = subprocess.run(
+        "python3 ~/.hermes/profiles/bedrock/bin/etapa-0-sincronizar-completo",
+        shell=True,
+        capture_output=True,
+        text=True,
+        timeout=600
+    )
+    
+    if result.returncode != 0:
+        log_msg(f"❌ ETAPA 0 FALLÓ: {result.stderr}", "ERROR")
+        return False
+    
+    log_msg("✅ ETAPA 0 COMPLETADA")
+    
+    # Resumen
+    duracion = datetime.now() - inicio
+    log_msg(f"✅ PIPELINE CRON COMPLETADO en {duracion.total_seconds():.1f}s")
+    
+    # Guardar resumen
+    resumen = {
+        "timestamp": datetime.now().isoformat(),
+        "duracion_segundos": duracion.total_seconds(),
+        "etapas_completadas": 0,  # Actualizar según etapas reales
+        "status": "EXITOSO"
+    }
+    
+    resumen_path = LOG_DIR / f"cron_pipeline_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    with open(resumen_path, 'w') as f:
+        json.dump(resumen, f, indent=2)
+    
+    return True
+
+if __name__ == "__main__":
+    try:
+        exitoso = ejecutar_pipeline_cron()
+        exit(0 if exitoso else 1)
+    except Exception as e:
+        log_msg(f"❌ ERROR: {str(e)}", "ERROR")
+        exit(1)

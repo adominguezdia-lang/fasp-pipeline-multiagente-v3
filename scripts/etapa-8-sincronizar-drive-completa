@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""
+etapa_8_sincronizar_drive_completa.py - ETAPA 8 COMPLETA: Sube a Drive
+Sube PDFs renombrados y exceles a la carpeta FASP en Drive
+"""
+
+from pathlib import Path
+from datetime import datetime
+import json
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+import time
+
+TOKEN_PATH = Path.home() / ".hermes/google_token.json"
+WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+LOG_DIR = WORK_DIR / "logs"
+DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"  # "09 FASP"
+
+def log_msg(msg, nivel="INFO"):
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    line = f"[{timestamp}] {nivel}: {msg}"
+    print(line)
+
+def autenticar_drive():
+    """Autentica con Google Drive"""
+    try:
+        if not TOKEN_PATH.exists():
+            log_msg(f"❌ Token no encontrado: {TOKEN_PATH}", "ERROR")
+            return None
+        
+        with open(TOKEN_PATH, 'r') as f:
+            token_data = json.load(f)
+        
+        creds = Credentials.from_authorized_user_info(token_data)
+        
+        if creds.expired and creds.refresh_token:
+            log_msg("🔄 Renovando token...")
+            creds.refresh(Request())
+        
+        return build('drive', 'v3', credentials=creds)
+    except Exception as e:
+        log_msg(f"❌ Error autenticando: {str(e)}", "ERROR")
+        return None
+
+def crear_carpeta_drive(service, nombre, parent_id):
+    """Crea una carpeta en Drive si no existe"""
+    try:
+        # Buscar si existe
+        query = f"'{parent_id}' in parents and name='{nombre}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        results = service.files().list(
+            q=query,
+            spaces='drive',
+            fields='files(id, name)',
+            pageSize=10
+        ).execute()
+        
+        items = results.get('files', [])
+        if items:
+            return items[0]['id']
+        
+        # Crear
+        file_metadata = {
+            'name': nombre,
+            'mimeType': 'application/vnd.google-apps.folder',
+            'parents': [parent_id]
+        }
+        
+        folder = service.files().create(body=file_metadata, fields='id').execute()
+        return folder.get('id')
+    except Exception as e:
+        log_msg(f"❌ Error creando carpeta: {str(e)}", "ERROR")
+        return None
+
+def subir_archivo_drive(service, file_path, parent_id, file_name=None):
+    """Sube UN archivo a Drive"""
+    try:
+        if file_name is None:
+            file_name = file_path.name
+        
+        # Verificar si existe
+        query = f"'{parent_id}' in parents and name='{file_name}' and trashed=false"
+        results = service.files().list(
+            q=query,
+            spaces='drive',
+            fields='files(id)',
+            pageSize=1
+        ).execute()
+        
+        items = results.get('files', [])
+        
+        # Metadatos
+        file_metadata = {
+            'name': file_name,
+            'parents': [parent_id]
+        }
+        
+        media = MediaFileUpload(file_path, resumable=True)
+        
+        if items:
+            # Actualizar existente
+            file_id = items[0]['id']
+            file_obj = service.files().update(
+                fileId=file_id,
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            log_msg(f"🔄 Actualizado: {file_name}")
+        else:
+            # Crear nuevo
+            file_obj = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields='id'
+            ).execute()
+            log_msg(f"⬆️  Subido: {file_name}")
+        
+        return True
+    except Exception as e:
+        log_msg(f"❌ Error subiendo {file_name}: {str(e)}", "ERROR")
+        return False
+
+def etapa_8_completa():
+    """ETAPA 8 COMPLETA: Sincroniza a Drive"""
+    
+    print("\n" + "="*80)
+    print("ETAPA 8: SINCRONIZACIÓN COMPLETA A DRIVE")
+    print("="*80 + "\n")
+    
+    # Autenticar
+    log_msg("🔐 Autenticando con Drive...")
+    service = autenticar_drive()
+    if not service:
+        return False
+    
+    log_msg("✅ Autenticación exitosa")
+    
+    # Crear carpeta corpusintegrado en Drive
+    log_msg("📁 Preparando carpeta corpusintegrado en Drive...")
+    corpus_folder_id = crear_carpeta_drive(service, "corpusintegrado_backup", DRIVE_FOLDER_ID)
+    if not corpus_folder_id:
+        log_msg("❌ No se pudo crear carpeta corpusintegrado", "ERROR")
+        return False
+    
+    # Subir PDFs
+    log_msg("📤 Subiendo PDFs de corpusintegrado/...")
+    corpus_dir = WORK_DIR / "corpusintegrado"
+    pdfs_subidos = 0
+    pdfs_errores = 0
+    
+    if corpus_dir.exists():
+        pdfs = list(corpus_dir.glob("*.pdf"))
+        log_msg(f"📊 Encontrados {len(pdfs)} PDFs para subir")
+        
+        for i, pdf in enumerate(pdfs, 1):
+            if subir_archivo_drive(service, pdf, corpus_folder_id):
+                pdfs_subidos += 1
+            else:
+                pdfs_errores += 1
+            
+            # Rate limiting
+            if i % 5 == 0:
+                time.sleep(1)
+    
+    # Crear carpeta exceles en Drive
+    log_msg("📁 Preparando carpeta exceles en Drive...")
+    exceles_folder_id = crear_carpeta_drive(service, "exceles_backup", DRIVE_FOLDER_ID)
+    if not exceles_folder_id:
+        log_msg("❌ No se pudo crear carpeta exceles", "ERROR")
+        return False
+    
+    # Subir Exceles
+    log_msg("📤 Subiendo exceles/...")
+    exceles_dir = WORK_DIR / "exceles"
+    exceles_subidos = 0
+    exceles_errores = 0
+    
+    if exceles_dir.exists():
+        exceles = list(exceles_dir.glob("*.xlsx"))
+        log_msg(f"📊 Encontrados {len(exceles)} exceles para subir")
+        
+        for excel in exceles:
+            if subir_archivo_drive(service, excel, exceles_folder_id):
+                exceles_subidos += 1
+            else:
+                exceles_errores += 1
+    
+    # Resumen
+    print(f"\n{'='*80}")
+    print("RESUMEN ETAPA 8")
+    print(f"{'='*80}")
+    print(f"✅ PDFs subidos: {pdfs_subidos}")
+    print(f"❌ PDFs con error: {pdfs_errores}")
+    print(f"✅ Exceles subidos: {exceles_subidos}")
+    print(f"❌ Exceles con error: {exceles_errores}")
+    
+    total_errores = pdfs_errores + exceles_errores
+    
+    if total_errores == 0:
+        print(f"\n✅ ETAPA 8 COMPLETADA EXITOSAMENTE")
+        print(f"{'='*80}\n")
+        return True
+    else:
+        print(f"\n⚠️  ETAPA 8 COMPLETADA CON {total_errores} ERRORES")
+        print(f"{'='*80}\n")
+        return False
+
+if __name__ == "__main__":
+    exito = etapa_8_completa()
+    exit(0 if exito else 1)

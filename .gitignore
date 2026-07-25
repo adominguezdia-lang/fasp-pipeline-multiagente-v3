@@ -1,0 +1,48 @@
+# Sistema
+.DS_Store
+.DS_Store?
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Credenciales
+google_token.json
+.env
+.env.local
+
+# Archivos temporales
+*.tmp
+*.temp
+*.log.gz
+.drive_snapshot.json
+.drive_watch_snapshot.json
+.pipeline_checkpoints.json
+
+# Carpetas de datos pesadas (no versionarlas, solo documentación)
+# Descomenta si quieres ignorar:
+# 09 FASP/
+# corpusintegrado/
+# corpus_por_estado_v2/
+# exceles/
+
+# Cache
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+*.egg-info/
+
+# Backups
+*.bak
+*.backup
+backup/
+backups/
+.archive/
+.metadata/
+
+# Venv
+venv/
+env/
