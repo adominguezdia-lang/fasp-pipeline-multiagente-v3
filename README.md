@@ -53,6 +53,15 @@ Las salidas se guardan bajo `corpusintegrado/<estado>/`, `exceles/<estado>/` y `
 
 Durante el procesamiento se analiza el texto y los metadatos de cada PDF para obtener una etiqueta general a partir de su título o encabezado. Si Drive trae varios PDFs con el mismo nombre base pero contenido diferente, el pipeline conserva todos y genera nombres legibles para uso humano y NotebookLM, por ejemplo con una etiqueta breve de contenido y una versión visible (`V1.0`, `V1.1`, etc.). El SHA-256 queda en `contenido_manifest.json` para auditoría y trazabilidad, pero no aparece en el nombre final del archivo.
 
+Para publicar o actualizar en Drive los Exceles generados, usa una carpeta estable `FASP_EXCELES`:
+
+```bash
+python3 scripts/sincronizar-exceles-drive --dry-run
+python3 scripts/sincronizar-exceles-drive
+```
+
+Este paso es incremental: conserva la estructura `exceles/<estado>/`, actualiza archivos existentes cuando cambia su SHA y omite archivos sin cambios. No borra archivos remotos por defecto.
+
 Para varios estados, sincroniza primero de manera secuencial y procesa después hasta tres estados en paralelo:
 
 ```bash
@@ -116,6 +125,7 @@ python3 scripts/sincronizar-notebooklm-drive --run-label 2026-07-25
 - El corpus NotebookLM se genera aparte de `corpusintegrado`; no modifica Drive ni crea notebooks automáticamente.
 - `FASP_NBLM` es una carpeta intermedia en Drive para importar fuentes a NotebookLM; el pipeline puede actualizarla, pero la creación del notebook en NotebookLM Pro sigue siendo manual.
 - `FASP_NBLM_NOVEDADES/<fecha>` contiene únicamente fuentes nuevas o modificadas para agregarlas manualmente al notebook sin revisar todo el corpus.
+- `FASP_EXCELES` es la carpeta estable en Drive para publicar los libros generados; se actualiza por SHA y evita duplicados.
 - La distribución se publica de forma completa y respalda la salida anterior, evitando PDFs obsoletos.
 - El manifiesto del corpus registra origen, tamaño y SHA-256 de cada PDF.
 

@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Sincroniza incrementalmente los Exceles locales hacia una carpeta estable en Drive."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import mimetypes
+from datetime import datetime
+from pathlib import Path
+
+from pipeline_common import sha256_file, token_path, work_dir, write_json
+
+
+FOLDER_MIME = "application/vnd.google-apps.folder"
+WORK_DIR = work_dir()
+TOKEN_PATH = token_path()
+
+
+def authenticate_drive():
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    if not TOKEN_PATH.exists():
+        raise FileNotFoundError(f"Token no encontrado: {TOKEN_PATH}")
+    with TOKEN_PATH.open(encoding="utf-8") as stream:
+        token_data = json.load(stream)
+    credentials = Credentials.from_authorized_user_info(token_data)
+    if credentials.expired and credentials.refresh_token:
+        credentials.refresh(Request())
+    return build("drive", "v3", credentials=credentials)
+
+
+def quote_query_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("'", "\\'")
+
+
+def find_child(service, parent_id: str, name: str, mime_type: str | None = None) -> dict | None:
+    query = [
+        f"'{quote_query_value(parent_id)}' in parents",
+        f"name='{quote_query_value(name)}'",
+        "trashed=false",
+    ]
+    if mime_type:
+        query.append(f"mimeType='{quote_query_value(mime_type)}'")
+    response = service.files().list(
+        q=" and ".join(query),
+        fields="files(id,name,mimeType,appProperties,size)",
+        pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+    files = response.get("files", [])
+    if len(files) > 1:
+        raise RuntimeError(f"Destino ambiguo en Drive: {name} tiene {len(files)} coincidencias en {parent_id}")
+    return files[0] if files else None
+
+
+def ensure_folder(service, parent_id: str, name: str, dry_run: bool) -> tuple[str, str]:
+    if dry_run and parent_id.startswith("dry-run:"):
+        return f"{parent_id}/{name}", "carpeta_crear"
+    existing = find_child(service, parent_id, name, FOLDER_MIME)
+    if existing:
+        return existing["id"], "carpeta_existente"
+    if dry_run:
+        return f"dry-run:{parent_id}/{name}", "carpeta_crear"
+    created = service.files().create(
+        body={"name": name, "mimeType": FOLDER_MIME, "parents": [parent_id]},
+        fields="id",
+        supportsAllDrives=True,
+    ).execute()
+    return created["id"], "carpeta_creada"
+
+
+def iter_local_files(source: Path):
+    for path in sorted(source.rglob("*")):
+        if path.is_file() and path.name not in {".DS_Store", "exceles_drive_manifest.json"}:
+            yield path
+
+
+def content_type(path: Path) -> str:
+    guessed, _ = mimetypes.guess_type(path.name)
+    return guessed or "application/octet-stream"
+
+
+def build_folder_map(service, source: Path, root_folder_id: str, dry_run: bool) -> tuple[dict[Path, str], list[dict]]:
+    folder_ids = {Path("."): root_folder_id}
+    actions = []
+    for folder in sorted(path for path in source.rglob("*") if path.is_dir()):
+        relative = folder.relative_to(source)
+        parent_id = folder_ids[relative.parent]
+        folder_id, status = ensure_folder(service, parent_id, folder.name, dry_run)
+        folder_ids[relative] = folder_id
+        actions.append({"type": "folder", "path": str(relative), "status": status, "drive_id": folder_id})
+    return folder_ids, actions
+
+
+def sync_file(service, path: Path, source: Path, parent_id: str, dry_run: bool) -> dict:
+    relative = path.relative_to(source)
+    digest = sha256_file(path)
+    mime_type = content_type(path)
+    existing = None if dry_run and parent_id.startswith("dry-run:") else find_child(service, parent_id, path.name)
+    result = {
+        "type": "file",
+        "path": str(relative),
+        "name": path.name,
+        "sha256": digest,
+        "mimeType": mime_type,
+    }
+    if existing and existing.get("appProperties", {}).get("fasp_sha256") == digest:
+        result.update({"status": "sin_cambios", "drive_id": existing["id"]})
+        return result
+    if dry_run:
+        result.update({"status": "actualizar" if existing else "subir", "drive_id": existing.get("id") if existing else None})
+        return result
+
+    from googleapiclient.http import MediaFileUpload
+
+    media = MediaFileUpload(str(path), mimetype=mime_type, resumable=True)
+    body = {"name": path.name, "appProperties": {"fasp_sha256": digest, "fasp_source": "exceles"}}
+    if existing:
+        updated = service.files().update(
+            fileId=existing["id"],
+            body=body,
+            media_body=media,
+            fields="id,name,appProperties",
+            supportsAllDrives=True,
+        ).execute()
+        result.update({"status": "actualizado", "drive_id": updated["id"]})
+    else:
+        body["parents"] = [parent_id]
+        created = service.files().create(
+            body=body,
+            media_body=media,
+            fields="id,name,appProperties",
+            supportsAllDrives=True,
+        ).execute()
+        result.update({"status": "subido", "drive_id": created["id"]})
+    return result
+
+
+def sync_tree(service, source: Path, root_name: str, parent_id: str, dry_run: bool) -> dict:
+    if not source.exists():
+        raise FileNotFoundError(f"No existe la carpeta local de Exceles: {source}")
+    root_id, root_status = ensure_folder(service, parent_id, root_name, dry_run)
+    folder_ids, actions = build_folder_map(service, source, root_id, dry_run)
+    actions.insert(0, {"type": "folder", "path": ".", "status": root_status, "drive_id": root_id, "name": root_name})
+    for path in iter_local_files(source):
+        relative_parent = path.relative_to(source).parent
+        actions.append(sync_file(service, path, source, folder_ids[relative_parent], dry_run))
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "dry_run": dry_run,
+        "source": str(source),
+        "drive_root_name": root_name,
+        "drive_parent_id": parent_id,
+        "status_counts": {},
+        "items": actions,
+    }
+    for item in actions:
+        report["status_counts"][item["status"]] = report["status_counts"].get(item["status"], 0) + 1
+    return report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Sube o actualiza incrementalmente los Exceles en Drive.")
+    parser.add_argument("--source", type=Path, default=WORK_DIR / "exceles")
+    parser.add_argument("--drive-root-name", default="FASP_EXCELES")
+    parser.add_argument("--parent-id", default="root", help="Carpeta padre en Drive; por defecto, Mi unidad.")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    service = authenticate_drive()
+    report = sync_tree(service, args.source, args.drive_root_name, args.parent_id, args.dry_run)
+    suffix = "dry_run" if args.dry_run else "aplicado"
+    write_json(WORK_DIR / "logs" / f"exceles_drive_{suffix}_{datetime.now():%Y%m%d_%H%M%S}.json", report)
+    write_json(WORK_DIR / "exceles" / "exceles_drive_manifest.json", report)
+    print(json.dumps(report["status_counts"], indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

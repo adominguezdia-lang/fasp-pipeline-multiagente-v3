@@ -56,6 +56,13 @@ notebooklm_drive_spec = importlib.util.spec_from_loader(
 notebooklm_drive = importlib.util.module_from_spec(notebooklm_drive_spec)
 notebooklm_drive_spec.loader.exec_module(notebooklm_drive)
 
+exceles_drive_spec = importlib.util.spec_from_loader(
+    "sincronizar_exceles_drive",
+    SourceFileLoader("sincronizar_exceles_drive", str(SCRIPTS / "sincronizar-exceles-drive")),
+)
+exceles_drive = importlib.util.module_from_spec(exceles_drive_spec)
+exceles_drive_spec.loader.exec_module(exceles_drive)
+
 
 def run(script, *arguments, work_dir):
     environment = {**os.environ, "FASP_WORK_DIR": str(work_dir)}
@@ -352,6 +359,36 @@ class PipelineSafetyTests(unittest.TestCase):
             pdf = source / "a.pdf"
             pdf.write_bytes(b"hello")
             result = notebooklm_drive.sync_file(Service(), pdf, source, "parent", dry_run=False)
+            self.assertEqual(result["status"], "sin_cambios")
+            self.assertEqual(result["drive_id"], "file-id")
+
+    def test_exceles_drive_manifest_is_not_uploaded_as_excel_source(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            (source / "a.xlsx").write_bytes(b"source")
+            (source / "exceles_drive_manifest.json").write_text("{}", encoding="utf-8")
+            names = [path.name for path in exceles_drive.iter_local_files(source)]
+            self.assertEqual(names, ["a.xlsx"])
+
+    def test_exceles_drive_unchanged_file_uses_sha_property(self):
+        class Files:
+            def list(self, **kwargs):
+                class Request:
+                    def execute(self):
+                        return {"files": [{"id": "file-id", "name": "a.xlsx", "appProperties": {"fasp_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}}]}
+                return Request()
+
+        class Service:
+            def files(self):
+                return Files()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "exceles"
+            source.mkdir()
+            xlsx = source / "a.xlsx"
+            xlsx.write_bytes(b"hello")
+            result = exceles_drive.sync_file(Service(), xlsx, source, "parent", dry_run=False)
             self.assertEqual(result["status"], "sin_cambios")
             self.assertEqual(result["drive_id"], "file-id")
 
