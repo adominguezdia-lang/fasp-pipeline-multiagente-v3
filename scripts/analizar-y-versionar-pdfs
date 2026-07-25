@@ -1,0 +1,169 @@
+#!/usr/bin/env python3
+"""Identifica y versiona PDFs con reglas generales basadas en contenido."""
+
+import argparse
+import re
+import unicodedata
+from datetime import datetime
+from pathlib import Path
+
+from pipeline_common import content_label, read_json, sha256_file, write_json
+
+
+VERSION_PATTERN = re.compile(r"_V\d+(?:\.\d+)?$", re.IGNORECASE)
+DRIVE_SUFFIX_PATTERN = re.compile(r"__drive-([A-Za-z0-9]+)", re.IGNORECASE)
+
+
+def readable_token(value: str, separator: str = "-") -> str:
+    ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
+    token = re.sub(r"[^A-Za-z0-9]+", separator, ascii_value.upper()).strip(separator)
+    return re.sub(rf"{re.escape(separator)}+", separator, token)
+
+
+def original_stem(path: Path) -> str:
+    stem = DRIVE_SUFFIX_PATTERN.sub("", path.stem)
+    return stem
+
+
+def safe_drive_id_prefix(file_name: str) -> str | None:
+    match = DRIVE_SUFFIX_PATTERN.search(file_name)
+    return match.group(1) if match else None
+
+
+def snapshot_id_by_prefix(snapshot: dict) -> dict[str, str]:
+    candidates = {}
+    for file_id in snapshot.get("files", {}):
+        safe_id = re.sub(r"[^A-Za-z0-9]", "", file_id)
+        for length in range(8, min(len(safe_id), 32) + 1):
+            candidates.setdefault(safe_id[:length], set()).add(file_id)
+    return {prefix: next(iter(ids)) for prefix, ids in candidates.items() if len(ids) == 1}
+
+
+def base_name(path: Path) -> tuple[str, str]:
+    stem = original_stem(path)
+    version_match = VERSION_PATTERN.search(stem)
+    version = version_match.group(0).lstrip("_").upper() if version_match else "V1.0"
+    base = VERSION_PATTERN.sub("", stem)
+    base = readable_token(base, "_")
+    if not base.startswith("FASP_"):
+        base = f"FASP_{base}"
+    return base[:96], version
+
+
+def label_fragment(label: str) -> str:
+    return readable_token(label, "-")[:56] or "CONTENIDO-SIN-TITULO"
+
+
+def human_target_name(path: Path, label: str, duplicate_index: int | None = None) -> str:
+    base, version = base_name(path)
+    if duplicate_index is not None:
+        base = f"{base}_{label_fragment(label)}"[:140].rstrip("_-")
+        version = f"V1.{duplicate_index}"
+    return f"{base}_{version}.pdf"
+
+
+def extract_document(path: Path) -> dict:
+    try:
+        import fitz
+    except ImportError as error:
+        raise RuntimeError("Falta PyMuPDF; instala las dependencias con requirements.txt.") from error
+    with fitz.open(path) as document:
+        return {
+            "text": "\n".join(page.get_text("text") for page in document),
+            "title": (document.metadata or {}).get("title", ""),
+            "pages": document.page_count,
+        }
+
+
+def load_previous_records(source: Path) -> dict[str, dict]:
+    manifest = read_json(source / "contenido_manifest.json", {"files": []})
+    return {record.get("sha256"): record for record in manifest.get("files", []) if record.get("sha256")}
+
+
+def analyze(source: Path, dry_run: bool = False) -> dict:
+    if not source.exists():
+        raise FileNotFoundError(f"Directorio no existe: {source}")
+    previous = load_previous_records(source)
+    drive_ids = snapshot_id_by_prefix(read_json(source.parents[1] / ".drive_snapshot.json", {"files": {}})) if len(source.parents) > 1 else {}
+    pending = []
+    for pdf in sorted(path for path in source.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"):
+        digest = sha256_file(pdf)
+        previous_record = previous.get(digest)
+        if previous_record and pdf.name == previous_record.get("final_name"):
+            previous_record = dict(previous_record)
+            previous_record["status"] = "sin_cambios"
+            pending.append({
+                "path": pdf,
+                "document": {"title": previous_record.get("titulo_pdf", ""), "pages": previous_record.get("paginas", 0)},
+                "label": previous_record.get("identificador_contenido", "CONTENIDO_SIN_TITULO"),
+                "sha256": digest,
+                "base": base_name(pdf)[0],
+                "previous_record": previous_record,
+            })
+            continue
+        document = extract_document(pdf)
+        label = content_label(document["text"], document["title"])
+        pending.append({"path": pdf, "document": document, "label": label, "sha256": digest, "base": base_name(pdf)[0], "previous_record": previous_record})
+
+    groups = {}
+    for item in pending:
+        groups.setdefault(item["base"], []).append(item)
+
+    records = []
+    used_destinations: set[Path] = set()
+    for group in groups.values():
+        requires_content_version = len({item["sha256"] for item in group}) > 1 or len(group) > 1
+        ordered = sorted(group, key=lambda item: (label_fragment(item["label"]), item["sha256"], str(item["path"])))
+        for duplicate_index, item in enumerate(ordered):
+            pdf = item["path"]
+            destination = pdf.with_name(human_target_name(pdf, item["label"], duplicate_index if requires_content_version else None))
+            suffix = 2
+            while destination in used_destinations or (destination.exists() and destination != pdf and sha256_file(destination) != item["sha256"]):
+                stem = destination.stem
+                stem = re.sub(r"_COPIA-\d+$", "", stem)
+                destination = destination.with_name(f"{stem}_COPIA-{suffix}.pdf")
+                suffix += 1
+            used_destinations.add(destination)
+            final_path = pdf
+            if item.get("previous_record") and pdf.name == item["previous_record"].get("final_name"):
+                final_path = pdf
+            elif destination != pdf and not dry_run:
+                pdf.rename(destination)
+                final_path = destination
+            elif destination != pdf:
+                final_path = destination
+            previous_record = item.get("previous_record") or {}
+            drive_prefix = safe_drive_id_prefix(pdf.name) or safe_drive_id_prefix(previous_record.get("original_name", ""))
+
+            records.append({
+                "original_name": previous_record.get("original_name") or pdf.name,
+                "final_name": final_path.name,
+                "identificador_contenido": item["label"],
+                "version_contenido": f"V1.{duplicate_index}" if requires_content_version else base_name(pdf)[1],
+                "titulo_pdf": item["document"]["title"],
+                "paginas": item["document"]["pages"],
+                "sha256": item["sha256"],
+                "drive_file_id": previous_record.get("drive_file_id") or drive_ids.get(drive_prefix or ""),
+                "status": "sin_cambios" if previous_record and pdf.name == previous_record.get("final_name") else "versionado",
+            })
+    return {"timestamp": datetime.now().isoformat(), "total_pdfs": len(records), "files": records}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    try:
+        manifest = analyze(args.source, args.dry_run)
+    except (OSError, RuntimeError, ValueError) as error:
+        print(f"ERROR: {error}")
+        return 1
+    if not args.dry_run:
+        write_json(args.source / "contenido_manifest.json", manifest)
+    print(f"PDFs analizados y versionados: {manifest['total_pdfs']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

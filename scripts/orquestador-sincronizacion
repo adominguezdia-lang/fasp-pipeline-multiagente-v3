@@ -1,81 +1,62 @@
 #!/usr/bin/env python3
-"""
-orquestador_sincronizacion.py - Orquesta sincronización de múltiples carpetas
-Delega a subagentes: cada uno sincroniza UNA carpeta
-"""
+"""Sincroniza estados de forma segura y procesa sus salidas en paralelo."""
 
+import argparse
+import concurrent.futures
+import subprocess
 import sys
 from pathlib import Path
-from datetime import datetime
-import json
 
-# Carpetas a sincronizar
+
 CARPETAS = [
-    "01 EdoMex Nancy G",
-    "02 Hidalgo Diana", 
-    "03 Michoacán Jerónimo",
-    "04 Querétaro Jackie",
-    "05 Chiapas Diana",
-    "06 Tabasco Jerónimo",
-    "07 Tamaulipas Jackie",
-    "08 Zacatecas Maca",
-    "00 Bibliografía y normatividad federal",
-    "00 Coordinación"
+    "01 EdoMex Nancy G", "02 Hidalgo Diana", "03 Michoacán Jerónimo",
+    "04 Querétaro Jackie", "05 Chiapas Diana", "06 Tabasco Jerónimo",
+    "07 Tamaulipas Jackie", "08 Zacatecas Maca",
 ]
+SCRIPTS_DIR = Path(__file__).parent
 
-LOG_DIR = Path("/Users/adominguezdia/Documents/FASP/logs")
-REPORT_FILE = LOG_DIR / f"sincronizacion_multiagente_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
-def crear_reporte_inicial():
-    """Crea reporte inicial"""
-    return {
-        "timestamp": datetime.now().isoformat(),
-        "total_carpetas": len(CARPETAS),
-        "carpetas": {carpeta: {"status": "PENDING", "descargados": 0, "errores": 0} for carpeta in CARPETAS},
-        "resumen": {
-            "completadas": 0,
-            "con_errores": 0,
-            "pendientes": len(CARPETAS)
-        }
-    }
+def run(script, *arguments):
+    return subprocess.run([sys.executable, str(SCRIPTS_DIR / script), *arguments], text=True, capture_output=True)
 
-def guardar_reporte(reporte):
-    """Guarda reporte en JSON"""
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(REPORT_FILE, 'w') as f:
-        json.dump(reporte, f, indent=2, ensure_ascii=False)
-    print(f"📄 Reporte guardado: {REPORT_FILE}")
 
-def mostrar_carpetas():
-    """Muestra lista de carpetas para sincronizar"""
-    print("\n" + "="*80)
-    print("CARPETAS A SINCRONIZAR (MULTIAGENTE)")
-    print("="*80 + "\n")
-    
-    for i, carpeta in enumerate(CARPETAS, 1):
-        print(f"{i:2d}. {carpeta}")
-    
-    print(f"\n📊 Total: {len(CARPETAS)} carpetas")
-    print("\nCada carpeta será sincronizada por UN subagente independiente")
-    print("Solo reportarán el resultado final\n")
+def process_state(state):
+    result = run("pipeline-por-estado", state, "--skip-sync")
+    return state, result.returncode, result.stdout, result.stderr
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run", action="store_true", help="Sincroniza y procesa los estados.")
+    parser.add_argument("--workers", type=int, default=3)
+    parser.add_argument("--rename-drive", action="store_true", help="Al finalizar, renombra en Drive los PDFs segun contenido_manifest.json.")
+    args = parser.parse_args()
+    if not args.run:
+        print("Estados configurados:")
+        print("\n".join(CARPETAS))
+        print("Use --run para ejecutar la sincronización secuencial y el procesamiento paralelo.")
+        return 0
+    for state in CARPETAS:
+        result = run("sincronizar-carpeta-drive", state)
+        print(result.stdout, end="")
+        if result.returncode:
+            print(result.stderr, file=sys.stderr, end="")
+            return result.returncode
+    errors = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.workers)) as executor:
+        for state, code, stdout, stderr in executor.map(process_state, CARPETAS):
+            print(stdout, end="")
+            if code:
+                errors += 1
+                print(f"{state}: {stderr}", file=sys.stderr)
+    if errors == 0 and args.rename_drive:
+        result = run("actualizar-nombres-drive-desde-manifest")
+        print(result.stdout, end="")
+        if result.returncode:
+            print(result.stderr, file=sys.stderr, end="")
+            errors += 1
+    return 1 if errors else 0
+
 
 if __name__ == "__main__":
-    reporte = crear_reporte_inicial()
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "--listar":
-        mostrar_carpetas()
-        guardar_reporte(reporte)
-    else:
-        print("\n" + "="*80)
-        print("ORQUESTADOR DE SINCRONIZACIÓN MULTIAGENTE")
-        print("="*80 + "\n")
-        
-        print("✅ Sistema listo para sincronización multiagente\n")
-        print(f"📊 Carpetas a sincronizar: {len(CARPETAS)}\n")
-        
-        for carpeta in CARPETAS:
-            print(f"  ⏳ {carpeta}")
-        
-        print(f"\n💾 Reporte: {REPORT_FILE}\n")
-        
-        guardar_reporte(reporte)
+    raise SystemExit(main())

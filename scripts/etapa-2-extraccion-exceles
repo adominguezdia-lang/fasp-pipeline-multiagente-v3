@@ -1,152 +1,106 @@
 #!/usr/bin/env python3
-"""
-etapa_2_extraccion_exceles.py - ETAPA 2: Extrae datos de PDFs y crea exceles
-Lee PDFs renombrados de /09 FASP/ y extrae metadatos
-"""
+"""ETAPA 2: extrae metadatos reales de PDFs y genera cuatro libros Excel."""
 
-from pathlib import Path
+import argparse
 from datetime import datetime
-import json
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
-import re
+from pathlib import Path
+from typing import List
 
-WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+from openpyxl import Workbook
+from openpyxl.styles import Font
+
+from pipeline_common import work_dir
+
+
+WORK_DIR = work_dir()
 FASP_LOCAL = WORK_DIR / "09 FASP"
 EXCELES_DIR = WORK_DIR / "exceles"
-LOG_FILE = WORK_DIR / "logs" / f"etapa_2_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+STATE_CODES = {"MEX": "EdoMex", "HID": "Hidalgo", "QRO": "Queretaro", "MIC": "Michoacan", "CHI": "Chiapas", "TAB": "Tabasco", "TAM": "Tamaulipas", "ZAC": "Zacatecas"}
 
-def log_msg(msg, nivel="INFO"):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] {nivel}: {msg}"
-    print(line)
-    LOG_FILE.parent.mkdir(exist_ok=True)
-    with open(LOG_FILE, 'a') as f:
-        f.write(line + "\n")
 
-print("\n" + "="*80)
-print("ETAPA 2: EXTRACCIÓN DE DATOS Y CREACIÓN DE EXCELES")
-print("="*80)
+def classify(filename: str) -> str:
+    upper = filename.upper()
+    if "_BIB-" in upper:
+        return "Bibliografia"
+    if "_NAL_" in upper or "_NORFED" in upper:
+        return "Normatividad Federal"
+    if "_TDR-" in upper:
+        return "TDR"
+    if any(f"_{code}_" in upper for code in STATE_CODES):
+        return "Normatividad Estatal"
+    return "Otros"
 
-try:
-    EXCELES_DIR.mkdir(exist_ok=True)
-    
-    log_msg("Escaneando PDFs renombrados en /09 FASP/...")
-    
-    # Encontrar todos los PDFs
-    pdfs = list(FASP_LOCAL.rglob("*.pdf"))
-    log_msg(f"✅ Encontrados {len(pdfs)} PDFs")
-    
-    # Categorizar PDFs
-    categorias = {
-        "Bibliografía": [],
-        "Normatividad Federal": [],
-        "Normatividad Estatal": [],
-        "TDR": [],
-        "Otros": []
-    }
-    
-    for pdf in pdfs:
-        nombre = pdf.name
-        if "_BIB-" in nombre:
-            categorias["Bibliografía"].append((nombre, pdf))
-        elif "_NAL_" in nombre or "_NORFED" in nombre:
-            categorias["Normatividad Federal"].append((nombre, pdf))
-        elif "_TDR-" in nombre:
-            categorias["TDR"].append((nombre, pdf))
-        elif any(x in nombre for x in ["_MEX_", "_HID_", "_QRO_", "_MIC_", "_CHI_", "_TAB_", "_TAM_", "_ZAC_"]):
-            categorias["Normatividad Estatal"].append((nombre, pdf))
-        else:
-            categorias["Otros"].append((nombre, pdf))
-    
-    log_msg(f"Categorización completada:")
-    for cat, items in categorias.items():
-        log_msg(f"  - {cat}: {len(items)}")
-    
-    # Crear excel CORPUS_MAESTRO
-    wb_maestro = Workbook()
-    ws = wb_maestro.active
-    ws.title = "Corpus Maestro"
-    
-    headers = ["Nombre Renombrado", "Tipo", "Estado", "Tamaño (KB)", "Ruta"]
-    ws.append(headers)
-    
-    row = 2
-    for cat, items in categorias.items():
-        for nombre, path in items:
-            estado = "Federal"
-            if "_MEX_" in nombre: estado = "EdoMex"
-            elif "_HID_" in nombre: estado = "Hidalgo"
-            elif "_QRO_" in nombre: estado = "Querétaro"
-            elif "_MIC_" in nombre: estado = "Michoacán"
-            elif "_CHI_" in nombre: estado = "Chiapas"
-            elif "_TAB_" in nombre: estado = "Tabasco"
-            elif "_TAM_" in nombre: estado = "Tamaulipas"
-            elif "_ZAC_" in nombre: estado = "Zacatecas"
-            
-            tamaño_kb = path.stat().st_size / 1024
-            ws[f"A{row}"] = nombre
-            ws[f"B{row}"] = cat
-            ws[f"C{row}"] = estado
-            ws[f"D{row}"] = f"{tamaño_kb:.1f}"
-            ws[f"E{row}"] = str(path)
-            row += 1
-    
-    maestro_path = EXCELES_DIR / "00_CORPUS_MAESTRO.xlsx"
-    wb_maestro.save(maestro_path)
-    log_msg(f"✅ Creado: {maestro_path.name}")
-    
-    # Crear excel Bibliografía
-    wb_bib = Workbook()
-    ws = wb_bib.active
-    ws.title = "Bibliografía"
-    ws.append(["Archivo PDF", "Autor", "Año", "Título", "Editorial", "Tema"])
-    
-    for nombre, path in categorias["Bibliografía"]:
-        ws.append([nombre, "[Extraer]", "[Extraer]", "[Extraer]", "[Extraer]", "[Extraer]"])
-    
-    bib_path = EXCELES_DIR / "01_bibliografía.xlsx"
-    wb_bib.save(bib_path)
-    log_msg(f"✅ Creado: {bib_path.name}")
-    
-    # Crear excel Normatividad Federal
-    wb_fed = Workbook()
-    ws = wb_fed.active
-    ws.title = "Normatividad Federal"
-    ws.append(["Archivo PDF", "Tipo Normativo", "Número", "Vigencia", "Ámbito Aplicación"])
-    
-    for nombre, path in categorias["Normatividad Federal"]:
-        ws.append([nombre, "[Extraer]", "[Extraer]", "[Extraer]", "[Extraer]"])
-    
-    fed_path = EXCELES_DIR / "01_normatividad_federal.xlsx"
-    wb_fed.save(fed_path)
-    log_msg(f"✅ Creado: {fed_path.name}")
-    
-    # Crear excel Normatividad Estatal
-    wb_est = Workbook()
-    ws = wb_est.active
-    ws.title = "Normatividad Estatal"
-    ws.append(["Archivo PDF", "Estado", "Tipo Normativo", "Número", "Vigencia"])
-    
-    for nombre, path in categorias["Normatividad Estatal"]:
-        # Extraer estado del nombre
-        estado = "Desconocido"
-        if "_MEX_" in nombre: estado = "EdoMex"
-        elif "_HID_" in nombre: estado = "Hidalgo"
-        elif "_QRO_" in nombre: estado = "Querétaro"
-        
-        ws.append([nombre, estado, "[Extraer]", "[Extraer]", "[Extraer]"])
-    
-    est_path = EXCELES_DIR / "01_normatividad_estatal.xlsx"
-    wb_est.save(est_path)
-    log_msg(f"✅ Creado: {est_path.name}")
-    
-    log_msg("✅ ETAPA 2 COMPLETADA - Exceles creados exitosamente")
-    
-    print("\n✅ ETAPA 2 FINALIZADA")
-    print(f"Log guardado: {LOG_FILE}")
-    print(f"Exceles guardados en: {EXCELES_DIR}")
-    
-except Exception as e:
-    log_msg(f"❌ Error en ETAPA 2: {str(e)}", "ERROR")
-    raise
+
+def state(filename: str) -> str:
+    upper = filename.upper()
+    return next((name for code, name in STATE_CODES.items() if f"_{code}_" in upper), "Federal")
+
+
+def metadata(path: Path) -> dict:
+    try:
+        import fitz
+    except ImportError as error:
+        raise RuntimeError("Falta PyMuPDF; instala la dependencia 'pymupdf'.") from error
+    with fitz.open(path) as document:
+        document_metadata = document.metadata or {}
+        preview = ""
+        if document.page_count:
+            preview = document[0].get_text("text").replace("\n", " ").strip()[:500]
+        return {
+            "paginas": document.page_count,
+            "titulo": document_metadata.get("title", ""),
+            "autor": document_metadata.get("author", ""),
+            "fecha": document_metadata.get("creationDate", ""),
+            "extracto": preview,
+        }
+
+
+def save_workbook(path: Path, title: str, headers: List[str], rows: List[List[str]]) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = title[:31]
+    worksheet.append(headers)
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+    for row in rows:
+        worksheet.append(row)
+    worksheet.freeze_panes = "A2"
+    for column in worksheet.columns:
+        letter = column[0].column_letter
+        worksheet.column_dimensions[letter].width = min(max(len(str(cell.value or "")) for cell in column) + 2, 60)
+    workbook.save(path)
+
+
+def extract(source: Path, output: Path) -> int:
+    if not source.exists():
+        raise FileNotFoundError(f"Directorio fuente no existe: {source}")
+    output.mkdir(parents=True, exist_ok=True)
+    records = []
+    for pdf in sorted(source.rglob("*.pdf")):
+        data = metadata(pdf)
+        records.append({"path": pdf, "category": classify(pdf.name), "state": state(pdf.name), **data})
+    headers = ["Archivo PDF", "Categoria", "Estado", "Paginas", "Tamano KB", "Titulo PDF", "Autor PDF", "Fecha PDF", "Extracto", "Ruta"]
+    rows = [[r["path"].name, r["category"], r["state"], r["paginas"], round(r["path"].stat().st_size / 1024, 1), r["titulo"], r["autor"], r["fecha"], r["extracto"], str(r["path"])] for r in records]
+    save_workbook(output / "00_CORPUS_MAESTRO.xlsx", "Corpus Maestro", headers, rows)
+    for category, filename in (("Bibliografia", "01_bibliografia.xlsx"), ("Normatividad Federal", "02_normatividad_federal.xlsx"), ("Normatividad Estatal", "03_normatividad_estatal.xlsx")):
+        selected = [row for row, record in zip(rows, records) if record["category"] == category]
+        save_workbook(output / filename, category, headers, selected)
+    return len(records)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=FASP_LOCAL)
+    parser.add_argument("--output", type=Path, default=EXCELES_DIR)
+    args = parser.parse_args()
+    try:
+        count = extract(args.source, args.output)
+    except (OSError, RuntimeError) as error:
+        print(f"ERROR: {error}")
+        return 1
+    print(f"ETAPA 2 completada: {count} PDFs analizados; 4 Exceles generados")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

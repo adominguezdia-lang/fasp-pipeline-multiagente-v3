@@ -1,90 +1,9 @@
 #!/usr/bin/env python3
-"""
-orquestador_pipeline_multiagente.py - Ejecuta Pipeline V3 con subagentes
-Cada ETAPA se ejecuta en paralelo cuando es posible
-"""
+"""Nombre histórico del orquestador de sincronización y procesamiento."""
 
-import sys
+import runpy
 from pathlib import Path
-from datetime import datetime
-import json
 
-ETAPAS = [
-    {
-        "numero": 1,
-        "nombre": "RENOMBRADO DE PDFs",
-        "script": "etapa-1-renombrado",
-        "descripcion": "Aplica nomenclatura FASP_2026 a PDFs"
-    },
-    {
-        "numero": 2,
-        "nombre": "EXTRACCIÓN Y EXCELES",
-        "script": "etapa-2-extraccion-exceles",
-        "descripcion": "Extrae metadatos y crea exceles"
-    },
-    {
-        "numero": 3,
-        "nombre": "INTEGRACIÓN corpusintegrado/",
-        "script": "etapa-3-integracion-corpusintegrado",
-        "descripcion": "Integra todos los PDFs a corpusintegrado/"
-    },
-    {
-        "numero": 4,
-        "nombre": "DISTRIBUCIÓN POR ESTADO",
-        "script": "etapa-4-distribucion-por-estado",
-        "descripcion": "Distribuye PDFs a carpetas por estado"
-    },
-    {
-        "numero": 8,
-        "nombre": "SINCRONIZACIÓN A DRIVE",
-        "script": "etapa-8-sincronizar-drive",
-        "descripcion": "Sube cambios al Drive"
-    }
-]
-
-LOG_DIR = Path("/Users/adominguezdia/Documents/FASP/logs")
-REPORT_FILE = LOG_DIR / f"pipeline_multiagente_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-
-def crear_reporte():
-    """Crea reporte del pipeline"""
-    return {
-        "timestamp": datetime.now().isoformat(),
-        "total_etapas": len(ETAPAS),
-        "etapas": {
-            etapa["numero"]: {
-                "nombre": etapa["nombre"],
-                "status": "PENDING",
-                "tiempo": 0
-            } for etapa in ETAPAS
-        }
-    }
-
-def mostrar_plan():
-    """Muestra el plan de ejecución"""
-    print("\n" + "="*100)
-    print("PIPELINE V3 - MODO MULTIAGENTE")
-    print("="*100 + "\n")
-    
-    print("📋 PLAN DE EJECUCIÓN:\n")
-    
-    for etapa in ETAPAS:
-        print(f"ETAPA {etapa['numero']}: {etapa['nombre']}")
-        print(f"  Script: {etapa['script']}")
-        print(f"  Descripción: {etapa['descripcion']}")
-        print()
-    
-    print("="*100)
-    print(f"Total: {len(ETAPAS)} etapas")
-    print("Modo: Secuencial (ETAPA→ETAPA) - cada una completa antes de la siguiente")
-    print("="*100 + "\n")
 
 if __name__ == "__main__":
-    reporte = crear_reporte()
-    mostrar_plan()
-    
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    with open(REPORT_FILE, 'w') as f:
-        json.dump(reporte, f, indent=2)
-    
-    print(f"✅ Reporte creado: {REPORT_FILE}\n")
-    print("🚀 LISTO PARA EJECUTAR PIPELINE MULTIAGENTE\n")
+    runpy.run_path(str(Path(__file__).with_name("orquestador-sincronizacion")), run_name="__main__")

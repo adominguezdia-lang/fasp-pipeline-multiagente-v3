@@ -1,80 +1,9 @@
 #!/usr/bin/env python3
-"""
-etapa_8_sincronizar_drive.py - ETAPA 8: Sincroniza cambios de vuelta a Drive
-Sube PDFs renombrados y exceles actualizados
-"""
+"""Compatibility entry point for the real Drive upload implementation."""
 
+import runpy
 from pathlib import Path
-from datetime import datetime
-import json
 
-WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
-LOG_DIR = WORK_DIR / "logs"
-
-def log_msg(msg, nivel="INFO"):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] {nivel}: {msg}"
-    print(line)
-
-def etapa_8():
-    """ETAPA 8: Sincronización a Drive"""
-    
-    print("\n" + "="*80)
-    print("ETAPA 8: SINCRONIZACIÓN A DRIVE")
-    print("="*80 + "\n")
-    
-    log_msg("📤 Iniciando sincronización de cambios a Drive...")
-    
-    # Verificar que los archivos existan
-    corpus_dir = WORK_DIR / "corpusintegrado"
-    exceles_dir = WORK_DIR / "exceles"
-    
-    if not corpus_dir.exists():
-        log_msg(f"❌ Carpeta {corpus_dir} no existe", "ERROR")
-        return False
-    
-    if not exceles_dir.exists():
-        log_msg(f"❌ Carpeta {exceles_dir} no existe", "ERROR")
-        return False
-    
-    # Contar archivos
-    pdfs = list(corpus_dir.rglob("*.pdf"))
-    exceles = list(exceles_dir.glob("*.xlsx"))
-    
-    log_msg(f"📊 PDFs en corpusintegrado/: {len(pdfs)}")
-    log_msg(f"📊 Exceles en exceles/: {len(exceles)}")
-    
-    # En esta versión, solo verificamos que existan los archivos
-    # La subida real a Drive se haría con googleapiclient
-    
-    if len(pdfs) > 0 and len(exceles) > 0:
-        log_msg(f"✅ Archivos listos para sincronizar a Drive")
-        
-        # Guardar resumen
-        resumen = {
-            "timestamp": datetime.now().isoformat(),
-            "pdfs_listos": len(pdfs),
-            "exceles_listos": len(exceles),
-            "status": "LISTO_PARA_UPLOAD"
-        }
-        
-        resumen_path = LOG_DIR / f"etapa_8_resumen_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        LOG_DIR.mkdir(parents=True, exist_ok=True)
-        
-        with open(resumen_path, 'w') as f:
-            json.dump(resumen, f, indent=2)
-        
-        log_msg(f"📄 Resumen guardado: {resumen_path}")
-        
-        print(f"\n{'='*80}")
-        print("ETAPA 8 COMPLETADA")
-        print(f"{'='*80}\n")
-        
-        return True
-    else:
-        log_msg(f"❌ No hay archivos para sincronizar", "ERROR")
-        return False
 
 if __name__ == "__main__":
-    exito = etapa_8()
-    exit(0 if exito else 1)
+    runpy.run_path(str(Path(__file__).with_name("etapa-8-sincronizar-drive-completa")), run_name="__main__")

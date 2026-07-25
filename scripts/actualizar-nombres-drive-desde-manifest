@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Actualiza en Drive los nombres finales definidos por contenido_manifest.json."""
+
+import argparse
+import json
+import re
+from datetime import datetime
+from pathlib import Path
+
+from pipeline_common import read_json, token_path, work_dir, write_json
+
+
+TOKEN_PATH = token_path()
+WORK_DIR = work_dir()
+DRIVE_ID_PATTERN = re.compile(r"__drive-([A-Za-z0-9]+)", re.IGNORECASE)
+
+
+def authenticate_drive():
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
+    if not TOKEN_PATH.exists():
+        raise FileNotFoundError(f"Token no encontrado: {TOKEN_PATH}")
+    with TOKEN_PATH.open(encoding="utf-8") as stream:
+        token_data = json.load(stream)
+    credentials = Credentials.from_authorized_user_info(token_data)
+    if credentials.expired and credentials.refresh_token:
+        credentials.refresh(Request())
+    return build("drive", "v3", credentials=credentials)
+
+
+def safe_drive_id_prefix(file_name: str) -> str | None:
+    match = DRIVE_ID_PATTERN.search(file_name)
+    return match.group(1) if match else None
+
+
+def snapshot_id_by_prefix(snapshot: dict) -> dict[str, str]:
+    candidates = {}
+    for file_id in snapshot.get("files", {}):
+        safe_id = re.sub(r"[^A-Za-z0-9]", "", file_id)
+        for length in range(8, min(len(safe_id), 32) + 1):
+            candidates.setdefault(safe_id[:length], set()).add(file_id)
+    return {prefix: next(iter(ids)) for prefix, ids in candidates.items() if len(ids) == 1}
+
+
+def iter_manifest_records(source: Path):
+    for manifest_path in sorted(source.rglob("contenido_manifest.json")):
+        manifest = read_json(manifest_path, {"files": []})
+        for record in manifest.get("files", []):
+            yield manifest_path, record
+
+
+def build_updates(source: Path, snapshot: dict) -> list[dict]:
+    ids = snapshot_id_by_prefix(snapshot)
+    updates = []
+    for manifest_path, record in iter_manifest_records(source):
+        file_id = record.get("drive_file_id")
+        prefix = safe_drive_id_prefix(record.get("original_name", ""))
+        if not file_id and prefix:
+            file_id = ids.get(prefix)
+        if not file_id and not prefix:
+            updates.append({
+                "manifest": str(manifest_path),
+                "status": "sin_file_id",
+                "original_name": record.get("original_name", ""),
+                "final_name": record.get("final_name", ""),
+            })
+            continue
+        if not file_id:
+            updates.append({
+                "manifest": str(manifest_path),
+                "status": "file_id_no_resuelto",
+                "drive_id_prefix": prefix,
+                "original_name": record.get("original_name", ""),
+                "final_name": record.get("final_name", ""),
+            })
+            continue
+        updates.append({
+            "manifest": str(manifest_path),
+            "status": "pendiente",
+            "file_id": file_id,
+            "original_name": record.get("original_name", ""),
+            "final_name": record.get("final_name", ""),
+        })
+    return updates
+
+
+def apply_updates(service, updates: list[dict], dry_run: bool) -> list[dict]:
+    results = []
+    for update in updates:
+        if update["status"] != "pendiente":
+            results.append(update)
+            continue
+        file_id = update["file_id"]
+        final_name = update["final_name"]
+        try:
+            current = service.files().get(fileId=file_id, fields="id,name").execute()
+            update["drive_name_before"] = current.get("name", "")
+            if current.get("name") == final_name:
+                update["status"] = "sin_cambios"
+            elif dry_run:
+                update["status"] = "dry_run"
+            else:
+                service.files().update(fileId=file_id, body={"name": final_name}, fields="id,name").execute()
+                update["status"] = "renombrado"
+        except Exception as error:
+            update["status"] = "error"
+            update["error"] = str(error)
+        results.append(update)
+    return results
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Renombra archivos en Drive segun contenido_manifest.json.")
+    parser.add_argument("--source", type=Path, default=WORK_DIR / "09 FASP")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    snapshot = read_json(WORK_DIR / ".drive_snapshot.json", {"files": {}})
+    updates = build_updates(args.source, snapshot)
+    service = authenticate_drive()
+    results = apply_updates(service, updates, args.dry_run)
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "dry_run": args.dry_run,
+        "source": str(args.source),
+        "total": len(results),
+        "status_counts": {},
+        "files": results,
+    }
+    for item in results:
+        report["status_counts"][item["status"]] = report["status_counts"].get(item["status"], 0) + 1
+    suffix = "dry_run" if args.dry_run else "aplicado"
+    write_json(WORK_DIR / "logs" / f"drive_rename_{suffix}_{datetime.now():%Y%m%d_%H%M%S}.json", report)
+    print(json.dumps(report["status_counts"], indent=2, ensure_ascii=False))
+    blocking = {"error", "sin_file_id", "file_id_no_resuelto"}
+    return 0 if not any(report["status_counts"].get(status, 0) for status in blocking) else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,102 +1,99 @@
 #!/usr/bin/env python3
-"""
-etapa_3_integracion_corpusintegrado.py - ETAPA 3: Integración a corpusintegrado/
-Copia PDFs renombrados de /09 FASP/ a corpusintegrado/ (fuente única)
-"""
+"""ETAPA 3: construye un corpus PDF reproducible y sin colisiones."""
 
-from pathlib import Path
-from datetime import datetime
+import argparse
 import shutil
-import json
+from datetime import datetime
+from pathlib import Path
 
-WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+from pipeline_common import sha256_file, work_dir, write_json
+
+
+WORK_DIR = work_dir()
 FASP_LOCAL = WORK_DIR / "09 FASP"
 CORPUS_DIR = WORK_DIR / "corpusintegrado"
-LOG_FILE = WORK_DIR / "logs" / f"etapa_3_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+LOG_FILE = WORK_DIR / "logs" / f"etapa_3_{datetime.now():%Y%m%d_%H%M%S}.log"
 
-def log_msg(msg, nivel="INFO"):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] {nivel}: {msg}"
+
+def log_msg(message, level="INFO"):
+    line = f"[{datetime.now():%H:%M:%S}] {level}: {message}"
     print(line)
-    LOG_FILE.parent.mkdir(exist_ok=True)
-    with open(LOG_FILE, 'a') as f:
-        f.write(line + "\n")
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_FILE.open("a", encoding="utf-8") as stream:
+        stream.write(line + "\n")
 
-print("\n" + "="*80)
-print("ETAPA 3: INTEGRACIÓN A corpusintegrado/")
-print("="*80)
 
-try:
-    log_msg("Iniciando integración a corpusintegrado/...")
-    
-    # Backup de corpusintegrado actual
-    if CORPUS_DIR.exists():
-        backup_dir = WORK_DIR / ".archive" / f"corpus_backup_etapa3_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        log_msg(f"📦 Creando backup en {backup_dir.name}...")
-        
-        for pdf in CORPUS_DIR.glob("*.pdf"):
-            shutil.copy2(pdf, backup_dir)
-        
-        log_msg(f"✅ Backup creado: {len(list(backup_dir.glob('*.pdf')))} PDFs")
-    
-    # Vaciar corpusintegrado
-    log_msg("🧹 Vaciando corpusintegrado/...")
-    CORPUS_DIR.mkdir(exist_ok=True)
-    for pdf in CORPUS_DIR.glob("*.pdf"):
-        pdf.unlink()
-    for json_file in CORPUS_DIR.glob("*.json"):
-        json_file.unlink()
-    log_msg("✅ Directorio limpio")
-    
-    # Copiar PDFs de /09 FASP/ recursivamente
-    log_msg("📋 Escaneando TODOS los archivos en /09 FASP/...")
-    archivos_encontrados = list(FASP_LOCAL.rglob("*"))
-    archivos_encontrados = [f for f in archivos_encontrados if f.is_file()]
-    log_msg(f"✅ Encontrados {len(archivos_encontrados)} archivos")
-    
-    log_msg("📥 Copiando TODOS los archivos a corpusintegrado/...")
-    copied = 0
-    for archivo in archivos_encontrados:
-        try:
-            shutil.copy2(archivo, CORPUS_DIR / archivo.name)
-            copied += 1
-            if copied % 10 == 0:
-                log_msg(f"  Copiados: {copied}/{len(archivos_encontrados)}")
-        except Exception as e:
-            log_msg(f"⚠️  Error copiando {archivo.name}: {str(e)}", "WARN")
-    
-    log_msg(f"✅ Copias completadas: {copied} archivos")
-    
-    # Verificar que no hay duplicados
-    copias = list(CORPUS_DIR.glob("*"))
-    copias = [f for f in copias if f.is_file()]
-    unicos = set(p.name for p in copias)
-    
-    if len(copias) == len(unicos):
-        log_msg(f"✅ Verificación: {len(unicos)} PDFs únicos (sin duplicados)")
-    else:
-        log_msg(f"⚠️  Verificación: {len(copias)} PDFs, {len(unicos)} únicos", "WARN")
-    
-    # Crear manifest.json
-    manifest = {
+def build_plan(source: Path):
+    files = sorted(path for path in source.rglob("*.pdf") if path.is_file())
+    by_sha = {}
+    for path in files:
+        digest = sha256_file(path)
+        current = by_sha.get(digest)
+        if not current or len(path.name) < len(current.name):
+            by_sha[digest] = path
+    files = sorted(by_sha.values())
+    names = {}
+    for path in files:
+        names.setdefault(path.name, []).append(path)
+    collisions = {name: paths for name, paths in names.items() if len(paths) > 1}
+    if collisions:
+        details = "; ".join(f"{name}: {', '.join(str(p.relative_to(source)) for p in paths)}" for name, paths in collisions.items())
+        raise ValueError(f"Nombres duplicados en origen; no se puede crear un corpus plano: {details}")
+    return files
+
+
+def integrate(source: Path, output: Path, dry_run: bool = False) -> int:
+    if not source.exists():
+        raise FileNotFoundError(f"Directorio fuente no existe: {source}")
+    files = build_plan(source)
+    log_msg(f"PDFs validados para integrar: {len(files)}")
+    if dry_run:
+        return len(files)
+
+    if output.exists():
+        backup = output.parent / ".archive" / f"corpus_backup_{datetime.now():%Y%m%d_%H%M%S}"
+        existing = [path for path in output.iterdir() if path.is_file()]
+        if existing:
+            backup.mkdir(parents=True, exist_ok=True)
+            for path in existing:
+                shutil.copy2(path, backup / path.name)
+        for path in existing:
+            path.unlink()
+    output.mkdir(parents=True, exist_ok=True)
+
+    manifest_files = []
+    for source_file in files:
+        destination = output / source_file.name
+        shutil.copy2(source_file, destination)
+        manifest_files.append({
+            "name": destination.name,
+            "source": str(source_file.relative_to(source)),
+            "sha256": sha256_file(destination),
+            "bytes": destination.stat().st_size,
+        })
+    write_json(output / "manifest.json", {
         "timestamp": datetime.now().isoformat(),
-        "total_pdfs": len(unicos),
-        "origen": str(FASP_LOCAL),
-        "pdfs": sorted([p.name for p in copias])
-    }
-    
-    manifest_path = CORPUS_DIR / "manifest.json"
-    with open(manifest_path, 'w') as f:
-        json.dump(manifest, f, indent=2, ensure_ascii=False)
-    
-    log_msg(f"✅ Manifest creado: manifest.json")
-    log_msg("✅ ETAPA 3 COMPLETADA - Integración exitosa")
-    
-    print("\n✅ ETAPA 3 FINALIZADA")
-    print(f"Log guardado: {LOG_FILE}")
-    print(f"PDFs en corpusintegrado: {len(unicos)}")
-    
-except Exception as e:
-    log_msg(f"❌ Error en ETAPA 3: {str(e)}", "ERROR")
-    raise
+        "total_pdfs": len(manifest_files),
+        "source": str(source),
+        "files": manifest_files,
+    })
+    return len(manifest_files)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=FASP_LOCAL)
+    parser.add_argument("--output", type=Path, default=CORPUS_DIR)
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    try:
+        count = integrate(args.source, args.output, args.dry_run)
+    except (OSError, ValueError) as error:
+        log_msg(str(error), "ERROR")
+        return 1
+    log_msg(f"Corpus integrado: {count} PDFs")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
