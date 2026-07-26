@@ -7,12 +7,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pipeline_common import work_dir
 
 CARPETAS = [
     "01 EdoMex Nancy G", "02 Hidalgo Diana", "03 Michoacán Jerónimo",
     "04 Querétaro Jackie", "05 Chiapas Diana", "06 Tabasco Jerónimo",
     "07 Tamaulipas Jackie", "08 Zacatecas Maca",
 ]
+COMMON_FOLDER = "00 Bibliografía y normatividad federal"
+WORK_DIR = work_dir()
 SCRIPTS_DIR = Path(__file__).parent
 
 
@@ -21,7 +24,7 @@ def run(script, *arguments):
 
 
 def process_state(state):
-    result = run("pipeline-por-estado", state, "--skip-sync")
+    result = run("pipeline-por-estado", state, "--skip-sync", "--skip-common")
     return state, result.returncode, result.stdout, result.stderr
 
 
@@ -36,6 +39,16 @@ def main() -> int:
         print("\n".join(CARPETAS))
         print("Use --run para ejecutar la sincronización secuencial y el procesamiento paralelo.")
         return 0
+    result = run("sincronizar-carpeta-drive", COMMON_FOLDER)
+    print(result.stdout, end="")
+    if result.returncode:
+        print(result.stderr, file=sys.stderr, end="")
+        return result.returncode
+    result = run("analizar-y-versionar-pdfs", "--source", WORK_DIR / "09 FASP" / COMMON_FOLDER)
+    print(result.stdout, end="")
+    if result.returncode:
+        print(result.stderr, file=sys.stderr, end="")
+        return result.returncode
     for state in CARPETAS:
         result = run("sincronizar-carpeta-drive", state)
         print(result.stdout, end="")

@@ -56,6 +56,13 @@ notebooklm_drive_spec = importlib.util.spec_from_loader(
 notebooklm_drive = importlib.util.module_from_spec(notebooklm_drive_spec)
 notebooklm_drive_spec.loader.exec_module(notebooklm_drive)
 
+state_pipeline_spec = importlib.util.spec_from_loader(
+    "pipeline_por_estado",
+    SourceFileLoader("pipeline_por_estado", str(SCRIPTS / "pipeline-por-estado")),
+)
+state_pipeline = importlib.util.module_from_spec(state_pipeline_spec)
+state_pipeline_spec.loader.exec_module(state_pipeline)
+
 exceles_drive_spec = importlib.util.spec_from_loader(
     "sincronizar_exceles_drive",
     SourceFileLoader("sincronizar_exceles_drive", str(SCRIPTS / "sincronizar-exceles-drive")),
@@ -117,6 +124,25 @@ class PipelineSafetyTests(unittest.TestCase):
         )
         self.assertEqual(name, "FASP_2026_P1_HID_NOR-REGLAMENTOSP-2024_V10.pdf")
 
+    def test_content_version_uses_shared_federal_rules(self):
+        name = analyzer.human_target_name(
+            Path("00 Bibliografía y normatividad federal/02 Normatividad federal/REGLAMENTO_SESNSP_DRIVE-abc123.pdf"),
+            "Reglamento SESNSP",
+        )
+        self.assertEqual(name, "FASP_2026_P1_NAL_NORFED-REGLAMENTO-SESNSP_V10.pdf")
+
+    def test_content_version_uses_shared_bibliography_rules(self):
+        name = analyzer.human_target_name(
+            Path("00 Bibliografía y normatividad federal/01 Bibliografía/ARTICULO_06.pdf"),
+            "Articulo 06",
+        )
+        self.assertEqual(name, "FASP_2026_P1_NAL_BIB-ARTICULO-06_V10.pdf")
+
+    def test_content_version_prefers_drive_suffixed_duplicate_keeper(self):
+        plain = Path("REGLAMENTO_SESNSP.pdf")
+        drive = Path("REGLAMENTO_SESNSP_DRIVE-abc123.pdf")
+        self.assertLess(analyzer.duplicate_keeper_key(drive), analyzer.duplicate_keeper_key(plain))
+
     def test_content_version_rewrites_previous_legacy_final_name(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "07 Tamaulipas Jackie" / "01 Normatividad estatal"
@@ -159,6 +185,24 @@ class PipelineSafetyTests(unittest.TestCase):
             self.assertEqual(manifest["total_pdfs"], 1)
             self.assertEqual(manifest["files"][0]["final_name"], "FASP_2026_P1_TAM_NOR-LEY_V10.pdf")
 
+    def test_state_pipeline_can_skip_shared_folder_when_orchestrated(self):
+        stages = []
+        previous_run_stage = state_pipeline.run_stage
+        previous_work_dir = state_pipeline.WORK_DIR
+        with tempfile.TemporaryDirectory() as temporary:
+            state_pipeline.WORK_DIR = Path(temporary)
+            def fake_run_stage(name, script, arguments):
+                stages.append((name, script, list(arguments)))
+                return {"name": name, "status": "COMPLETADA", "returncode": 0, "stderr": ""}
+            state_pipeline.run_stage = fake_run_stage
+            try:
+                result = state_pipeline.pipeline_state("07 Tamaulipas Jackie", skip_sync=True, skip_common=True)
+            finally:
+                state_pipeline.run_stage = previous_run_stage
+                state_pipeline.WORK_DIR = previous_work_dir
+        self.assertEqual(result, 0)
+        self.assertFalse(any("COMUN" in name for name, _, _ in stages))
+
     def test_normalize_filename_preserves_readable_version(self):
         name = renamer.normalize_filename("FASP_2026_P1_MEX_DOC-DOCUMENTO_Toluca de Lerdo México_V1.2.pdf")
         self.assertEqual(name, "FASP_2026_P1_MEX_DOC-DOCUMENTO_TOLUCA_DE_LERDO_MEXICO_V1.2.pdf")
@@ -197,7 +241,7 @@ class PipelineSafetyTests(unittest.TestCase):
                 {
                   "files": [
                     {
-                      "original_name": "documento_DRIVE-1aTqON0oonP9HOOv.pdf",
+                      "original_name": "documento_DRIVE-1ATQON0OONP9HOOV.pdf",
                       "final_name": "FASP_2026_P1_MEX_NOR-DOCUMENTO_V10.pdf"
                     }
                   ]

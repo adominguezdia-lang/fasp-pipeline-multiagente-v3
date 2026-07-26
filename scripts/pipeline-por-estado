@@ -14,6 +14,7 @@ from pipeline_common import work_dir, write_json
 
 WORK_DIR = work_dir()
 SCRIPTS_DIR = Path(__file__).parent
+COMMON_FOLDER = "00 Bibliografía y normatividad federal"
 
 
 def slug(value: str) -> str:
@@ -29,13 +30,19 @@ def run_stage(name: str, script: str, arguments: List[object]) -> dict:
     return {"name": name, "status": "COMPLETADA" if result.returncode == 0 else "FALLO", "returncode": result.returncode, "stderr": result.stderr[-2000:]}
 
 
-def pipeline_state(state_name: str, skip_sync: bool = False) -> int:
+def pipeline_state(state_name: str, skip_sync: bool = False, skip_common: bool = False) -> int:
     identifier = slug(state_name)
     source = WORK_DIR / "09 FASP" / state_name
+    common_source = WORK_DIR / "09 FASP" / COMMON_FOLDER
     corpus = WORK_DIR / "corpusintegrado" / identifier
     distribution = WORK_DIR / "corpus_por_estado_v2" / identifier
     spreadsheets = WORK_DIR / "exceles" / identifier
-    stages = ([] if skip_sync else [
+    stages = []
+    if not skip_common:
+        if not skip_sync:
+            stages.append(("ETAPA 0 COMUN", "sincronizar-carpeta-drive", [COMMON_FOLDER]))
+        stages.append(("ETAPA 1A COMUN", "analizar-y-versionar-pdfs", ["--source", common_source]))
+    stages += ([] if skip_sync else [
         ("ETAPA 0", "sincronizar-carpeta-drive", [state_name]),
     ]) + [
         ("ETAPA 1A", "analizar-y-versionar-pdfs", ["--source", source]),
@@ -59,8 +66,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Procesa un estado con entradas y salidas aisladas.")
     parser.add_argument("state")
     parser.add_argument("--skip-sync", action="store_true", help="Usar sólo después de sincronizar el estado.")
+    parser.add_argument("--skip-common", action="store_true", help="Usar cuando la carpeta compartida ya fue sincronizada y analizada.")
     args = parser.parse_args()
-    return pipeline_state(args.state, args.skip_sync)
+    return pipeline_state(args.state, args.skip_sync, args.skip_common)
 
 
 if __name__ == "__main__":

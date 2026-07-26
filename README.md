@@ -55,7 +55,7 @@ Las salidas se guardan bajo `corpusintegrado/<estado>/`, `exceles/<estado>/` y `
 
 Durante el procesamiento se analiza el texto y los metadatos de cada PDF para obtener una etiqueta general a partir de su título o encabezado. Si Drive trae varios PDFs con el mismo nombre base pero contenido diferente, el pipeline conserva todos y genera nombres legibles para uso humano y NotebookLM, por ejemplo con una etiqueta breve de contenido y una versión visible (`V1.0`, `V1.1`, etc.). El SHA-256 queda en `contenido_manifest.json` para auditoría y trazabilidad, pero no aparece en el nombre final del archivo.
 
-Los nombres finales de PDFs deben seguir el patrón `FASP_2026_P1_<AMBITO>_<TIPO>-<DESCRIPCION>_V<VERSION>.pdf`. Para normatividad estatal, `<AMBITO>` es el código del estado (`MEX`, `HID`, `MIC`, `QRO`, `CHI`, `TAB`, `TAM`, `ZAC`) y `<TIPO>` es `NOR`; por ejemplo `FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf`. No son válidos nombres truncados como `FASP_LEY_ESTATAL_DE_PLANEACION_V1.0.pdf`.
+Los nombres finales de PDFs deben seguir el patrón `FASP_2026_P1_<AMBITO>_<TIPO>-<DESCRIPCION>_V<VERSION>.pdf`. Para normatividad estatal, `<AMBITO>` es el código del estado (`MEX`, `HID`, `MIC`, `QRO`, `CHI`, `TAB`, `TAM`, `ZAC`) y `<TIPO>` es `NOR`; por ejemplo `FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf`. Para la carpeta compartida `00 Bibliografía y normatividad federal`, las reglas son propias: `01 Bibliografía` usa `FASP_2026_P1_NAL_BIB-..._V10.pdf` y `02 Normatividad federal` usa `FASP_2026_P1_NAL_NORFED-..._V10.pdf`; por ejemplo `FASP_2026_P1_NAL_NORFED-REGLAMENTO-SESNSP_V10.pdf`. No son válidos nombres truncados como `FASP_LEY_ESTATAL_DE_PLANEACION_V1.0.pdf`, `REGLAMENTO_SESNSP.pdf` ni nombres con sufijos `DRIVE-` visibles.
 
 Para publicar o actualizar en Drive los Exceles generados, usa una carpeta estable `FASP_EXCELES`:
 
@@ -71,6 +71,8 @@ Para varios estados, sincroniza primero de manera secuencial y procesa después 
 ```bash
 python3 scripts/orquestador-sincronizacion --run --workers 3
 ```
+
+El orquestador sincroniza y normaliza primero `00 Bibliografía y normatividad federal` y después procesa los estados. Esto es obligatorio porque bibliografía y normatividad federal se copian a todos los notebooks y Exceles por estado. Si se procesa un estado individual con `pipeline-por-estado`, también se analiza la carpeta compartida antes del estado; usa `--skip-common` solo cuando el orquestador ya la procesó en esa misma corrida.
 
 Para validar y aplicar en Drive los nombres finales generados en local:
 
@@ -130,6 +132,18 @@ La preparación local es obligatoria antes de sincronizar Drive. `sincronizar-no
 Este paso crea o reutiliza `FASP_NBLM` en Mi unidad y replica las subcarpetas de `notebooklm/<estado>/`. La ejecución es incremental: cada archivo subido registra su SHA en Drive y se omite cuando el contenido local no cambió. Si el archivo existe pero cambió, se actualiza en el mismo `fileId`; no crea duplicados. No elimina archivos remotos por defecto.
 
 Además genera una carpeta de novedades por corrida en `FASP_NBLM_NOVEDADES/<fecha_hora>/`, por ejemplo `FASP_NBLM_NOVEDADES/2026-07-25_211500/`. Esa carpeta se crea en cada ejecución real y contiene solo PDFs nuevos o modificados, preservando la ruta por estado y sección. En NotebookLM, después de la primera carga completa, usa esta carpeta de novedades para agregar fuentes sin tener que seleccionar manualmente entre todo el corpus. Si no hay PDFs nuevos o modificados, la carpeta de ejecución queda vacía y sirve como evidencia de que no hubo novedades.
+
+Si necesitas recargar notebooks desde cero, convierte la carpeta de ejecución más reciente en paquete completo con todos los PDFs del corpus, incluyendo `00_Bibliografia`, `01_Normativa_Federal` y `02_Normativa_Estatal` por estado:
+
+```bash
+python3 scripts/cargar-corpus-completo-en-run-notebooklm
+```
+
+También puedes indicar una corrida específica:
+
+```bash
+python3 scripts/cargar-corpus-completo-en-run-notebooklm --run-label 2026-07-25_222247
+```
 
 Si se requiere una etiqueta específica para la corrida:
 

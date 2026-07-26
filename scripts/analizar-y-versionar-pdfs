@@ -57,9 +57,10 @@ def safe_drive_id_prefix(file_name: str) -> str | None:
 
 def duplicate_keeper_key(path: Path) -> tuple[int, int, str]:
     token = readable_token(path.stem, "-")
+    drive_penalty = 0 if safe_drive_id_prefix(path.name) else 1
     copy_penalty = 1 if re.search(r"(?:^|-)COPIA(?:-|$)", token) else 0
     generated_version_penalty = 1 if re.search(r"_V1[1-9]$", path.stem, flags=re.IGNORECASE) else 0
-    return (copy_penalty + generated_version_penalty, len(path.name), path.name)
+    return (drive_penalty, copy_penalty + generated_version_penalty, len(path.name), path.name)
 
 
 def source_name_path(path: Path, previous_record: dict | None = None) -> Path:
@@ -70,7 +71,7 @@ def source_name_path(path: Path, previous_record: dict | None = None) -> Path:
 def snapshot_id_by_prefix(snapshot: dict) -> dict[str, str]:
     candidates = {}
     for file_id in snapshot.get("files", {}):
-        safe_id = re.sub(r"[^A-Za-z0-9]", "", file_id)
+        safe_id = re.sub(r"[^A-Za-z0-9]", "", file_id).lower()
         for length in range(8, min(len(safe_id), 32) + 1):
             candidates.setdefault(safe_id[:length], set()).add(file_id)
     return {prefix: next(iter(ids)) for prefix, ids in candidates.items() if len(ids) == 1}
@@ -90,16 +91,17 @@ def state_code_from_path(path: Path) -> str:
 
 
 def kind_from_path(path: Path) -> str:
-    normalized = " / ".join(
+    parts = [
         unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode("ascii").lower()
         for part in path.parts
-    )
-    if "bibliografia" in normalized:
-        return "BIB"
-    if "normatividad federal" in normalized:
+    ]
+    normalized = " / ".join(parts)
+    if any(re.search(r"^\s*02\s+normatividad\s+federal", part) or part.strip() == "normatividad federal" for part in parts):
         return "NORFED"
     if "normatividad estatal" in normalized:
         return "NOR"
+    if any(re.search(r"^\s*01\s+bibliografia", part) or part.strip() == "bibliografia" for part in parts):
+        return "BIB"
     if "tdr" in normalized:
         return "TDR"
     return "DOC"
@@ -253,6 +255,7 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
                 final_path = destination
             previous_record = item.get("previous_record") or {}
             drive_prefix = safe_drive_id_prefix(pdf.name) or safe_drive_id_prefix(previous_record.get("original_name", ""))
+            drive_prefix = drive_prefix.lower() if drive_prefix else ""
 
             records.append({
                 "original_name": previous_record.get("original_name") or pdf.name,
@@ -262,7 +265,7 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
                 "titulo_pdf": item["document"]["title"],
                 "paginas": item["document"]["pages"],
                 "sha256": item["sha256"],
-                "drive_file_id": previous_record.get("drive_file_id") or drive_ids.get(drive_prefix or ""),
+                "drive_file_id": previous_record.get("drive_file_id") or drive_ids.get(drive_prefix),
                 "status": "sin_cambios" if previous_record.get("status") == "sin_cambios" and final_path == pdf else "versionado",
             })
     return {"timestamp": datetime.now().isoformat(), "total_pdfs": len(records), "files": records}
