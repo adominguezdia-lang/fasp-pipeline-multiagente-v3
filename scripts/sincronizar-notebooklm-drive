@@ -17,6 +17,37 @@ WORK_DIR = work_dir()
 TOKEN_PATH = token_path()
 
 
+def drive_folder_url(folder_id: str | None) -> str | None:
+    if not folder_id or folder_id.startswith("dry-run:"):
+        return None
+    return f"https://drive.google.com/drive/folders/{folder_id}"
+
+
+def report_links(report: dict) -> dict:
+    links = {
+        "corpus": None,
+        "novedades": None,
+        "novedades_corrida": None,
+    }
+    run_label = report.get("novedades_run_label")
+    for item in report.get("items", []):
+        if item.get("type") != "folder":
+            continue
+        status = item.get("status", "")
+        path = item.get("path")
+        name = item.get("name")
+        url = drive_folder_url(item.get("drive_id"))
+        if not url:
+            continue
+        if path == "." and not status.startswith("novedad_"):
+            links["corpus"] = url
+        elif path == "." and status.startswith("novedad_"):
+            links["novedades"] = url
+        elif path == run_label and name == run_label and status.startswith("novedad_"):
+            links["novedades_corrida"] = url
+    return links
+
+
 def authenticate_drive():
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -227,6 +258,7 @@ def sync_tree(
     }
     for item in summary["items"]:
         summary["status_counts"][item["status"]] = summary["status_counts"].get(item["status"], 0) + 1
+    summary["links"] = report_links(summary)
     return summary
 
 
@@ -255,7 +287,10 @@ def main() -> int:
     suffix = "dry_run" if args.dry_run else "aplicado"
     write_json(WORK_DIR / "logs" / f"notebooklm_drive_{suffix}_{datetime.now():%Y%m%d_%H%M%S}.json", report)
     write_json(WORK_DIR / "notebooklm" / "notebooklm_drive_manifest.json", report)
-    print(json.dumps(report["status_counts"], indent=2, ensure_ascii=False))
+    print(json.dumps({
+        "status_counts": report["status_counts"],
+        "links": report["links"],
+    }, indent=2, ensure_ascii=False))
     return 0
 
 

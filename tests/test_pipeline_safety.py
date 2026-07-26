@@ -373,6 +373,34 @@ class PipelineSafetyTests(unittest.TestCase):
             self.assertEqual(report["status_counts"]["novedad_subir"], 1)
             self.assertIn("novedad_carpeta_crear", report["status_counts"])
 
+    def test_notebooklm_drive_report_links_include_corpus_and_novelties(self):
+        report = {
+            "novedades_run_label": "2026-07-25",
+            "items": [
+                {"type": "folder", "path": ".", "status": "carpeta_existente", "drive_id": "corpus-id"},
+                {"type": "folder", "path": ".", "status": "novedad_carpeta_existente", "drive_id": "novedades-id", "name": "FASP_NBLM_NOVEDADES"},
+                {"type": "folder", "path": "2026-07-25", "status": "novedad_carpeta_creada", "drive_id": "run-id", "name": "2026-07-25"},
+            ],
+        }
+        self.assertEqual(notebooklm_drive.report_links(report), {
+            "corpus": "https://drive.google.com/drive/folders/corpus-id",
+            "novedades": "https://drive.google.com/drive/folders/novedades-id",
+            "novedades_corrida": "https://drive.google.com/drive/folders/run-id",
+        })
+
+    def test_notebooklm_drive_report_links_omit_virtual_dry_run_ids(self):
+        report = {
+            "novedades_run_label": "2026-07-25",
+            "items": [
+                {"type": "folder", "path": ".", "status": "carpeta_crear", "drive_id": "dry-run:root/FASP_NBLM"},
+            ],
+        }
+        self.assertEqual(notebooklm_drive.report_links(report), {
+            "corpus": None,
+            "novedades": None,
+            "novedades_corrida": None,
+        })
+
     def test_notebooklm_drive_unchanged_file_uses_sha_property(self):
         class Files:
             def list(self, **kwargs):
