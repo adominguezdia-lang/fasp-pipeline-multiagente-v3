@@ -384,6 +384,8 @@ class PipelineSafetyTests(unittest.TestCase):
         }
         self.assertEqual(notebooklm_drive.report_links(report), {
             "corpus": "https://drive.google.com/drive/folders/corpus-id",
+            "ejecuciones": "https://drive.google.com/drive/folders/novedades-id",
+            "ejecucion": "https://drive.google.com/drive/folders/run-id",
             "novedades": "https://drive.google.com/drive/folders/novedades-id",
             "novedades_corrida": "https://drive.google.com/drive/folders/run-id",
         })
@@ -397,9 +399,36 @@ class PipelineSafetyTests(unittest.TestCase):
         }
         self.assertEqual(notebooklm_drive.report_links(report), {
             "corpus": None,
+            "ejecuciones": None,
+            "ejecucion": None,
             "novedades": None,
             "novedades_corrida": None,
         })
+
+    def test_notebooklm_drive_creates_run_folder_even_without_new_files(self):
+        class Files:
+            def list(self, **kwargs):
+                class Request:
+                    def execute(self):
+                        return {"files": []}
+                return Request()
+
+        class Service:
+            def files(self):
+                return Files()
+
+        report = notebooklm_drive.sync_novelties(
+            Service(),
+            Path(tempfile.gettempdir()),
+            "root",
+            "FASP_NBLM_NOVEDADES",
+            "2026-07-25_211500",
+            [],
+            dry_run=True,
+        )
+        statuses = [item["status"] for item in report]
+        self.assertEqual(statuses, ["novedad_carpeta_crear", "novedad_carpeta_crear"])
+        self.assertEqual(report[1]["path"], "2026-07-25_211500")
 
     def test_notebooklm_drive_default_run_label_includes_date_and_time(self):
         self.assertRegex(notebooklm_drive.default_run_label(), r"^\d{4}-\d{2}-\d{2}_\d{6}$")

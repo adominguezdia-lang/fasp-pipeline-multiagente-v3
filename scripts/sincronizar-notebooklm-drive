@@ -30,6 +30,8 @@ def default_run_label() -> str:
 def report_links(report: dict) -> dict:
     links = {
         "corpus": None,
+        "ejecuciones": None,
+        "ejecucion": None,
         "novedades": None,
         "novedades_corrida": None,
     }
@@ -46,8 +48,10 @@ def report_links(report: dict) -> dict:
         if path == "." and not status.startswith("novedad_"):
             links["corpus"] = url
         elif path == "." and status.startswith("novedad_"):
+            links["ejecuciones"] = url
             links["novedades"] = url
         elif path == run_label and name == run_label and status.startswith("novedad_"):
+            links["ejecucion"] = url
             links["novedades_corrida"] = url
     return links
 
@@ -212,8 +216,6 @@ def sync_novelties(
     dry_run: bool,
 ) -> list[dict]:
     candidates = novelty_candidates(main_actions)
-    if not candidates:
-        return []
     root_id, root_status = ensure_folder(service, parent_id, root_name, dry_run)
     run_id, run_status = ensure_folder(service, root_id, run_label, dry_run)
     folder_ids, actions = build_needed_folder_map(service, source, run_id, candidates, dry_run)
