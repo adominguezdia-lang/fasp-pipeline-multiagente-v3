@@ -13,11 +13,13 @@ import io
 import json
 from pathlib import Path
 from datetime import datetime
+from pipeline_common import drive_local_path, read_json, token_path, work_dir, write_json
 
-TOKEN_PATH = Path.home() / ".hermes/google_token.json"
-FASP_LOCAL = Path("/Users/adominguezdia/Documents/FASP/09 FASP")
+TOKEN_PATH = token_path()
+FASP_LOCAL = work_dir() / "09 FASP"
 DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"
-LOG_DIR = Path("/Users/adominguezdia/Documents/FASP/logs")
+LOG_DIR = work_dir() / "logs"
+SNAPSHOT_FILE = work_dir() / ".drive_snapshot.json"
 
 def log_msg(msg, nivel="INFO"):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -76,7 +78,7 @@ def listar_archivos_recursivo(service, parent_id, carpeta_path=""):
             results = service.files().list(
                 q=query,
                 spaces='drive',
-                fields='files(id, name, mimeType, size)',
+            fields='files(id, name, mimeType, size, modifiedTime, md5Checksum, webViewLink)',
                 pageSize=1000,
                 pageToken=page_token
             ).execute()
@@ -97,7 +99,10 @@ def listar_archivos_recursivo(service, parent_id, carpeta_path=""):
                         'name': item['name'],
                         'path': current_path,
                         'size': int(item.get('size', 0)),
-                        'mimeType': item.get('mimeType', '')
+                        'mimeType': item.get('mimeType', ''),
+                        'modifiedTime': item.get('modifiedTime'),
+                        'md5Checksum': item.get('md5Checksum'),
+                        'webViewLink': item.get('webViewLink', ''),
                     })
             
             page_token = results.get('nextPageToken')
@@ -143,8 +148,10 @@ def descargar_archivo(service, file_id, file_name, dest_path, mime_type=None):
                 return False
         
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest_path, 'wb') as f:
+        temporary = dest_path.with_suffix(dest_path.suffix + ".download")
+        with open(temporary, 'wb') as f:
             f.write(fh.getvalue())
+        temporary.replace(dest_path)
         
         return True
     except Exception as e:
@@ -185,14 +192,9 @@ def sincronizar_carpeta(carpeta_nombre):
     carpeta_local = FASP_LOCAL / carpeta_nombre
     carpeta_local.mkdir(parents=True, exist_ok=True)
     
-    # Verificar qué ya existe
-    archivos_locales = {}
-    for archivo in carpeta_local.rglob("*"):
-        if archivo.is_file():
-            rel_path = str(archivo.relative_to(FASP_LOCAL))
-            archivos_locales[rel_path] = archivo
-    
-    log_msg(f"📁 Local ya tiene: {len(archivos_locales)} archivos")
+    snapshot = read_json(SNAPSHOT_FILE, {"files": {}})
+    versions = snapshot.get("files", {})
+    log_msg(f"📁 Versiones registradas: {len(versions)}")
     
     # Descargar
     log_msg(f"📥 Descargando archivos...")
@@ -201,17 +203,31 @@ def sincronizar_carpeta(carpeta_nombre):
     errores = 0
     
     for i, archivo in enumerate(archivos_drive, 1):
-        rel_path = archivo['path']
+        rel_path = str(drive_local_path(archivo['path'], archivo['id']))
         
-        if rel_path in archivos_locales:
-            log_msg(f"⏭️  [{i}/{len(archivos_drive)}] Ya existe: {archivo['name']}")
+        dest = FASP_LOCAL / rel_path
+        version = {
+            "id": archivo["id"],
+            "name": archivo["name"],
+            "path": archivo["path"],
+            "size": archivo["size"],
+            "mimeType": archivo.get("mimeType"),
+            "modifiedTime": archivo.get("modifiedTime"),
+            "md5Checksum": archivo.get("md5Checksum"),
+            "webViewLink": archivo.get("webViewLink", ""),
+        }
+        previous = versions.get(archivo["id"], {})
+        same_content = all(previous.get(key) == version.get(key) for key in ("size", "modifiedTime", "md5Checksum"))
+        if dest.exists() and same_content:
+            log_msg(f"⏭️  [{i}/{len(archivos_drive)}] Sin cambios: {archivo['name']}")
+            versions[archivo["id"]] = {**previous, **version}
             saltados += 1
         else:
             log_msg(f"⬇️  [{i}/{len(archivos_drive)}] Descargando: {archivo['name']}")
-            dest = FASP_LOCAL / rel_path
             
             if descargar_archivo(service, archivo['id'], archivo['name'], dest, archivo.get('mimeType')):
                 descargados += 1
+                versions[archivo["id"]] = version
             else:
                 errores += 1
     
@@ -223,6 +239,7 @@ def sincronizar_carpeta(carpeta_nombre):
     print(f"⏭️  Saltados: {saltados}")
     print(f"❌ Errores: {errores}")
     print(f"📊 Total: {len(archivos_drive)}")
+    write_json(SNAPSHOT_FILE, {"updatedAt": datetime.now().isoformat(), "files": versions})
     
     if errores == 0:
         print(f"\n✅ SINCRONIZACIÓN EXITOSA - Carpeta '{carpeta_nombre}'")

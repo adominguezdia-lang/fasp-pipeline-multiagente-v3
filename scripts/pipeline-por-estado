@@ -1,161 +1,75 @@
 #!/usr/bin/env python3
-"""
-pipeline_por_estado.py - Pipeline COMPLETO para UN estado
-Ejecuta TODAS las etapas (0-8) para un estado específico
-"""
+"""Ejecuta etapas 0-4 para un estado sin compartir salidas con otros estados."""
 
-import sys
+import argparse
+import re
 import subprocess
-from pathlib import Path
+import sys
 from datetime import datetime
-import json
+from pathlib import Path
+from typing import List
 
-WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
-LOG_DIR = WORK_DIR / "logs"
+from pipeline_common import work_dir, write_json
 
-def log_msg(msg, nivel="INFO"):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] {nivel}: {msg}"
-    print(line)
 
-def ejecutar_etapa(numero_etapa, nombre_etapa, comando):
-    """Ejecuta UNA etapa y reporta resultado"""
-    try:
-        log_msg(f"🚀 Ejecutando {nombre_etapa}...")
-        result = subprocess.run(comando, shell=True, capture_output=True, text=True, timeout=300)
-        
-        if result.returncode == 0:
-            log_msg(f"✅ {nombre_etapa} COMPLETADA")
-            return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "COMPLETADA", "error": None}
-        else:
-            log_msg(f"❌ {nombre_etapa} FALLÓ", "ERROR")
-            return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "FALLO", "error": result.stderr}
-    except subprocess.TimeoutExpired:
-        log_msg(f"⏱️  {nombre_etapa} TIMEOUT", "ERROR")
-        return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "TIMEOUT", "error": "Tiempo agotado"}
-    except Exception as e:
-        log_msg(f"❌ Error en {nombre_etapa}: {str(e)}", "ERROR")
-        return {"etapa": numero_etapa, "nombre": nombre_etapa, "status": "ERROR", "error": str(e)}
+WORK_DIR = work_dir()
+SCRIPTS_DIR = Path(__file__).parent
+COMMON_FOLDER = "00 Bibliografía y normatividad federal"
 
-def pipeline_estado(estado_nombre):
-    """Ejecuta pipeline COMPLETO para UN estado"""
-    
-    print("\n" + "="*100)
-    print(f"PIPELINE COMPLETO: {estado_nombre}")
-    print("="*100 + "\n")
-    
-    inicio = datetime.now()
-    resultados = []
-    
-    # ETAPA 0: Sincronización
-    resultado = ejecutar_etapa(
-        0,
-        "ETAPA 0: Sincronización desde Drive",
-        f"python3 ~/.hermes/profiles/bedrock/bin/sincronizar-carpeta-drive '{estado_nombre}'"
-    )
-    resultados.append(resultado)
-    
-    if resultado["status"] != "COMPLETADA":
-        log_msg(f"❌ Pipeline ABORTADO para {estado_nombre} - Error en ETAPA 0", "ERROR")
-        return resultados
-    
-    # Limpiar duplicados V1.0 después de sincronizar
-    log_msg("🧹 Limpiando duplicados V1.0 después de sincronización...")
-    import subprocess
-    try:
-        subprocess.run(
-            "find /Users/adominguezdia/Documents/FASP/09\\ FASP -name '*V1.0.pdf' -type f | while read f; do rm \"$f\"; done",
-            shell=True,
-            check=False
-        )
-        log_msg("✅ Duplicados V1.0 eliminados")
-    except Exception as e:
-        log_msg(f"⚠️  Error limpiando duplicados: {str(e)}", "WARN")
-    
-    # ETAPA 1: Renombrado
-    resultado = ejecutar_etapa(
-        1,
-        "ETAPA 1: Renombrado de PDFs",
-        "python3 ~/.hermes/profiles/bedrock/bin/etapa-1-renombrado"
-    )
-    resultados.append(resultado)
-    
-    # ETAPA 2: Extracción
-    resultado = ejecutar_etapa(
-        2,
-        "ETAPA 2: Extracción y Exceles",
-        "python3 ~/.hermes/profiles/bedrock/bin/etapa-2-extraccion-exceles"
-    )
-    resultados.append(resultado)
-    
-    # ETAPA 3: Integración
-    resultado = ejecutar_etapa(
-        3,
-        "ETAPA 3: Integración corpusintegrado/",
-        "python3 ~/.hermes/profiles/bedrock/bin/etapa-3-integracion-corpusintegrado"
-    )
-    resultados.append(resultado)
-    
-    # ETAPA 4: Distribución
-    resultado = ejecutar_etapa(
-        4,
-        "ETAPA 4: Distribución por estado",
-        "python3 ~/.hermes/profiles/bedrock/bin/etapa-4-distribucion-por-estado"
-    )
-    resultados.append(resultado)
-    
-    # ETAPA 8: Upload a Drive
-    resultado = ejecutar_etapa(
-        8,
-        "ETAPA 8: Sincronización a Drive",
-        "python3 ~/.hermes/profiles/bedrock/bin/etapa-8-sincronizar-drive"
-    )
-    resultados.append(resultado)
-    
-    # Resumen
-    duracion = datetime.now() - inicio
-    completadas = sum(1 for r in resultados if r["status"] == "COMPLETADA")
-    errores = sum(1 for r in resultados if r["status"] != "COMPLETADA")
-    
-    print("\n" + "="*100)
-    print("RESUMEN FINAL")
-    print("="*100)
-    print(f"Estado: {estado_nombre}")
-    print(f"Etapas completadas: {completadas}/6")
-    print(f"Errores: {errores}")
-    print(f"Duración: {duracion}")
-    print(f"Status: {'✅ EXITOSO' if errores == 0 else '❌ CON ERRORES'}")
-    print("="*100 + "\n")
-    
-    # Guardar reporte
-    reporte = {
-        "timestamp": datetime.now().isoformat(),
-        "estado": estado_nombre,
-        "duracion_segundos": duracion.total_seconds(),
-        "etapas_completadas": completadas,
-        "errores": errores,
-        "etapas": resultados
-    }
-    
-    reporte_path = LOG_DIR / f"pipeline_{estado_nombre}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    
-    with open(reporte_path, 'w') as f:
-        json.dump(reporte, f, indent=2, ensure_ascii=False)
-    
-    log_msg(f"📄 Reporte guardado: {reporte_path}")
-    
-    return resultados
+
+def slug(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+
+
+def run_stage(name: str, script: str, arguments: List[object]) -> dict:
+    result = subprocess.run([sys.executable, str(SCRIPTS_DIR / script), *map(str, arguments)], text=True, capture_output=True)
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.returncode:
+        print(result.stderr, file=sys.stderr, end="")
+    return {"name": name, "status": "COMPLETADA" if result.returncode == 0 else "FALLO", "returncode": result.returncode, "stderr": result.stderr[-2000:]}
+
+
+def pipeline_state(state_name: str, skip_sync: bool = False, skip_common: bool = False) -> int:
+    identifier = slug(state_name)
+    source = WORK_DIR / "09 FASP" / state_name
+    common_source = WORK_DIR / "09 FASP" / COMMON_FOLDER
+    corpus = WORK_DIR / "corpusintegrado" / identifier
+    distribution = WORK_DIR / "corpus_por_estado_v2" / identifier
+    spreadsheets = WORK_DIR / "exceles" / identifier
+    stages = []
+    if not skip_common:
+        if not skip_sync:
+            stages.append(("ETAPA 0 COMUN", "sincronizar-carpeta-drive", [COMMON_FOLDER]))
+        stages.append(("ETAPA 1A COMUN", "analizar-y-versionar-pdfs", ["--source", common_source]))
+    stages += ([] if skip_sync else [
+        ("ETAPA 0", "sincronizar-carpeta-drive", [state_name]),
+    ]) + [
+        ("ETAPA 1A", "analizar-y-versionar-pdfs", ["--source", source]),
+        ("ETAPA 1", "etapa-1-renombrado", ["--source", source]),
+        ("ETAPA 2", "etapa-2-extraccion-exceles", ["--source", source, "--output", spreadsheets, "--include-common"]),
+        ("ETAPA 3", "etapa-3-integracion-corpusintegrado", ["--source", source, "--output", corpus]),
+        ("ETAPA 4", "etapa-4-distribucion-por-estado", ["--source", corpus, "--output", distribution]),
+    ]
+    results = []
+    for name, script, arguments in stages:
+        result = run_stage(name, script, arguments)
+        results.append(result)
+        if result["status"] != "COMPLETADA":
+            break
+    report = {"timestamp": datetime.now().isoformat(), "state": state_name, "output": {"corpus": str(corpus), "distribution": str(distribution), "spreadsheets": str(spreadsheets)}, "stages": results}
+    write_json(WORK_DIR / "logs" / f"pipeline_{identifier}_{datetime.now():%Y%m%d_%H%M%S}.json", report)
+    return 0 if len(results) == len(stages) and all(item["status"] == "COMPLETADA" for item in results) else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Procesa un estado con entradas y salidas aisladas.")
+    parser.add_argument("state")
+    parser.add_argument("--skip-sync", action="store_true", help="Usar sólo después de sincronizar el estado.")
+    parser.add_argument("--skip-common", action="store_true", help="Usar cuando la carpeta compartida ya fue sincronizada y analizada.")
+    args = parser.parse_args()
+    return pipeline_state(args.state, args.skip_sync, args.skip_common)
+
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("❌ Uso: python3 pipeline_por_estado.py 'nombre_estado'")
-        print("")
-        print("Ejemplo: python3 pipeline_por_estado.py '01 EdoMex Nancy G'")
-        sys.exit(1)
-    
-    estado_nombre = sys.argv[1]
-    resultados = pipeline_estado(estado_nombre)
-    
-    errores = sum(1 for r in resultados if r["status"] != "COMPLETADA")
-    sys.exit(0 if errores == 0 else 1)
+    raise SystemExit(main())

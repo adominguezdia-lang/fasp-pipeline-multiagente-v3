@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Prepara corpus locales por estado para cargar en NotebookLM."""
+
+import argparse
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+from pipeline_common import sha256_file, work_dir, write_json
+
+
+WORK_DIR = work_dir()
+FASP_DIR = WORK_DIR / "09 FASP"
+OUTPUT_DIR = WORK_DIR / "notebooklm"
+COMMON_DIR = FASP_DIR / "00 Bibliografía y normatividad federal"
+STATES = [
+    "01 EdoMex Nancy G", "02 Hidalgo Diana", "03 Michoacán Jerónimo",
+    "04 Querétaro Jackie", "05 Chiapas Diana", "06 Tabasco Jerónimo",
+    "07 Tamaulipas Jackie", "08 Zacatecas Maca",
+]
+SECTIONS = [
+    ("00_Bibliografia", COMMON_DIR / "01 Bibliografía"),
+    ("01_Normativa_Federal", COMMON_DIR / "02 Normatividad federal"),
+]
+
+
+def pdfs(path: Path) -> list[Path]:
+    if not path.exists():
+        return []
+    return sorted(item for item in path.rglob("*.pdf") if item.is_file())
+
+
+def reset_output(path: Path) -> None:
+    if path.exists():
+        backup = path.parent / ".archive" / f"notebooklm_backup_{datetime.now():%Y%m%d_%H%M%S}"
+        backup.parent.mkdir(parents=True, exist_ok=True)
+        path.replace(backup)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def copy_section(files: list[Path], destination: Path, source_root: Path) -> list[dict]:
+    destination.mkdir(parents=True, exist_ok=True)
+    records = []
+    seen = set()
+    for source in files:
+        digest = sha256_file(source)
+        if digest in seen:
+            continue
+        seen.add(digest)
+        target = destination / source.name
+        suffix = 2
+        while target.exists() and sha256_file(target) != digest:
+            target = destination / f"{source.stem}_COPIA-{suffix}{source.suffix}"
+            suffix += 1
+        shutil.copy2(source, target)
+        records.append({
+            "name": target.name,
+            "source": str(source.relative_to(source_root)),
+            "sha256": digest,
+            "bytes": target.stat().st_size,
+        })
+    return records
+
+
+def write_index(state_dir: Path, state_name: str, sections: dict[str, list[dict]]) -> None:
+    lines = [
+        f"# Fuentes NotebookLM - {state_name}",
+        "",
+        f"Generado: {datetime.now().isoformat()}",
+        "",
+        "Cargar estas fuentes en un notebook/libro de NotebookLM para el estado.",
+        "",
+    ]
+    for section, records in sections.items():
+        lines.append(f"## {section}")
+        lines.append("")
+        for record in records:
+            lines.append(f"- {record['name']}")
+        lines.append("")
+    (state_dir / "FUENTES_NOTEBOOKLM.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def prepare(output: Path = OUTPUT_DIR) -> dict:
+    reset_output(output)
+    summary = {"timestamp": datetime.now().isoformat(), "output": str(output), "states": {}}
+    for state in STATES:
+        state_source = FASP_DIR / state
+        state_output = output / state
+        state_output.mkdir(parents=True, exist_ok=True)
+        sections = {}
+        for section_name, section_source in SECTIONS:
+            records = copy_section(pdfs(section_source), state_output / section_name, FASP_DIR)
+            sections[section_name] = records
+        estatal_source = state_source / "01 Normatividad estatal"
+        sections["02_Normativa_Estatal"] = copy_section(pdfs(estatal_source), state_output / "02_Normativa_Estatal", FASP_DIR)
+        summary["states"][state] = {name: len(records) for name, records in sections.items()}
+        write_json(state_output / "manifest_notebooklm.json", {"state": state, "sections": sections})
+        write_index(state_output, state, sections)
+    write_json(output / "manifest_notebooklm.json", summary)
+    return summary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Prepara carpetas locales por estado para NotebookLM.")
+    parser.add_argument("--output", type=Path, default=OUTPUT_DIR)
+    args = parser.parse_args()
+    summary = prepare(args.output)
+    for state, counts in summary["states"].items():
+        total = sum(counts.values())
+        print(f"{state}: {total} fuentes")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

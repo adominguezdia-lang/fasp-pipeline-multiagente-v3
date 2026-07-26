@@ -12,9 +12,10 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 import time
+from pipeline_common import token_path, work_dir
 
-TOKEN_PATH = Path.home() / ".hermes/google_token.json"
-WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+TOKEN_PATH = token_path()
+WORK_DIR = work_dir()
 LOG_DIR = WORK_DIR / "logs"
 DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"  # "09 FASP"
 

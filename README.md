@@ -1,155 +1,175 @@
-# FASP Pipeline Multiagente V3
+# FASP Pipeline Multiagente V4
 
-**Pipeline operacional** de sincronización, procesamiento y distribución del corpus FASP con arquitectura multiagente transversal.
+Pipeline para sincronizar, normalizar, analizar y distribuir documentos FASP.
 
-## 🚀 Quick Start
+## Estado
+
+V4 es la versión operativa vigente. El pipeline está preparado para ejecuciones reproducibles e incrementales. Cada estado se procesa en sus propias salidas; la publicación en Drive se ejecuta como operaciones separadas y trazables.
+
+El flujo es incremental: puede correrse durante varios días sobre la misma carpeta. Los archivos ya versionados se reconocen por su SHA y por `drive_file_id` en `contenido_manifest.json`; no deben re-versionarse como documentos nuevos.
+
+El comando histórico `scripts/etapa-8-sincronizar-drive` está obsoleto en V4. No debe usarse para publicar PDFs, Exceles ni corpus NotebookLM, porque no respeta el flujo actual basado en manifest, `fileId` y SHA.
+
+## Requisitos
+
+- Python 3.8 o posterior.
+- Dependencias: `python3 -m pip install -r requirements.txt`.
+- Token de Google Drive en `~/.hermes/google_token.json`, o en la ruta indicada por `FASP_GOOGLE_TOKEN`.
+- Directorio de trabajo mediante `FASP_WORK_DIR`; si se omite, usa `/Users/adominguezdia/Documents/FASP`.
+
+## Carpeta local de trabajo
+
+La carpeta indicada por `FASP_WORK_DIR` es solo el área operativa de datos. No debe usarse como repositorio Git ni como almacén de scripts, reportes históricos o bitácoras de pruebas. Después de una limpieza o corrida base debe conservar únicamente:
+
+- `09 FASP`
+- `corpusintegrado`
+- `corpus_por_estado_v2`
+- `exceles`
+- `notebooklm`
+- `.drive_snapshot.json`
+- `.drive_watch_snapshot.json`
+- `.metadata`
+
+Los respaldos de corridas anteriores, archivos sueltos en la raíz, logs, bases temporales, dashboards, reportes y carpetas auxiliares deben eliminarse o mantenerse fuera de `FASP_WORK_DIR`. El código fuente del skill vive en este repositorio, no dentro de la carpeta local de datos.
+
+## Flujo completo
 
 ```bash
-# ETAPA 0: Sincronizar desde Drive (10 carpetas, 67 archivos)
+export FASP_WORK_DIR="/ruta/a/FASP"
 python3 scripts/etapa-0-sincronizar-completo
-
-# ETAPA 1-4: Renombrar, Extraer, Integrar, Distribuir
 python3 scripts/etapa-1-renombrado
 python3 scripts/etapa-2-extraccion-exceles
 python3 scripts/etapa-3-integracion-corpusintegrado
 python3 scripts/etapa-4-distribucion-por-estado
-
-# ETAPA 8: Sincronizar de vuelta a Drive
-python3 scripts/etapa-8-sincronizar-drive-completa
-
-# Procesar 8 estados en paralelo
-python3 scripts/pipeline-por-estado '01 EdoMex Nancy G'
 ```
 
-## 📊 Resultados Finales
+La etapa 2 genera cuatro archivos Excel: un inventario maestro y tres libros por categoría. Incluye documentos PDF y hojas de cálculo cargadas en Drive. Para PDFs extrae páginas, metadatos, título legible, fuente del título, estado de texto extraíble, extracto y SHA-256. Cuando el PDF no trae título interno, se infiere desde el texto o desde el nombre del archivo y se registra en `Fuente Titulo`. La columna `Ruta Drive` registra la ruta original en Drive, y `Ruta Local` queda solo como trazabilidad operativa. Cuando se ejecuta por estado, el Excel incluye bibliografía común, normativa federal común y documentos estatales del usuario para que coincida con las fuentes preparadas para NotebookLM.
 
-| Métrica | Valor |
-|---------|-------|
-| **Carpetas sincronizadas** | 10 |
-| **Archivos descargados** | 67 |
-| **PDFs renombrados** | 44 |
-| **Exceles generados** | 10 |
-| **PDFs en corpusintegrado/** | 44 (2.5 GB) |
-| **PDFs distribuidos por estado** | 113 |
-| **PDFs subidos a Drive** | 41 ✅ |
-| **Duración total** | 20 min (5.6x más rápido que secuencial) |
+## Procesamiento por estado
 
-## 🏗️ Arquitectura
-
-### Multiagente Transversal (Por Estado, NO Vertical)
-
-```
-SINCRONIZACIÓN DRIVE (10 subagentes paralelos)
-              ↓
-ETAPAS 1-4 (Renombrar+Extraer+Integrar+Distribuir)
-              ↓
-PIPELINE POR ESTADO (8 agentes paralelos)
-  EdoMex (6/6) ✅ | Hidalgo (5/6) ⚠️ | ... (7 más)
-              ↓
-BACKUP A DRIVE (ETAPA 8)
-  41 PDFs + 10 Exceles subidos
+```bash
+python3 scripts/pipeline-por-estado "01 EdoMex Nancy G"
 ```
 
-## 📁 Carpetas Generadas
+Las salidas se guardan bajo `corpusintegrado/<estado>/`, `exceles/<estado>/` y `corpus_por_estado_v2/<estado>/`. La carga a Drive no se ejecuta desde este comando para evitar conflictos entre ejecuciones concurrentes.
 
+Durante el procesamiento se analiza el texto y los metadatos de cada PDF para obtener una etiqueta general a partir de su título o encabezado. Si Drive trae varios PDFs con el mismo nombre base pero contenido diferente, el pipeline conserva todos y genera nombres legibles para uso humano y NotebookLM, por ejemplo con una etiqueta breve de contenido y una versión visible (`V1.0`, `V1.1`, etc.). El SHA-256 queda en `contenido_manifest.json` para auditoría y trazabilidad, pero no aparece en el nombre final del archivo.
+
+Los nombres finales de PDFs deben seguir el patrón `FASP_2026_P1_<AMBITO>_<TIPO>-<DESCRIPCION>_V<VERSION>.pdf`. Para normatividad estatal, `<AMBITO>` es el código del estado (`MEX`, `HID`, `MIC`, `QRO`, `CHI`, `TAB`, `TAM`, `ZAC`) y `<TIPO>` es `NOR`; por ejemplo `FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf`. Para la carpeta compartida `00 Bibliografía y normatividad federal`, las reglas son propias: `01 Bibliografía` usa `FASP_2026_P1_NAL_BIB-..._V10.pdf` y `02 Normatividad federal` usa `FASP_2026_P1_NAL_NORFED-..._V10.pdf`; por ejemplo `FASP_2026_P1_NAL_NORFED-REGLAMENTO-SESNSP_V10.pdf`. No son válidos nombres truncados como `FASP_LEY_ESTATAL_DE_PLANEACION_V1.0.pdf`, `REGLAMENTO_SESNSP.pdf` ni nombres con sufijos `DRIVE-` visibles.
+
+Para publicar o actualizar en Drive los Exceles generados, usa una carpeta estable `FASP_EXCELES`:
+
+```bash
+python3 scripts/sincronizar-exceles-drive --dry-run
+python3 scripts/sincronizar-exceles-drive
 ```
-/Users/adominguezdia/Documents/FASP/
-├── 09 FASP/                     67 archivos (copia local Drive)
-├── corpusintegrado/             44 PDFs (fuente única, 2.5 GB)
-├── corpus_por_estado_v2/        113 PDFs (8 estados + Compartida)
-├── exceles/                     10 Exceles con metadatos
-├── logs/                        Auditoría completa
-├── scripts/                     15 scripts Python
-└── [documentación]
+
+Este paso es incremental: conserva la estructura `exceles/<estado>/`, actualiza archivos existentes cuando cambia su SHA y omite archivos sin cambios. No borra archivos remotos por defecto.
+
+Para varios estados, sincroniza primero de manera secuencial y procesa después hasta tres estados en paralelo:
+
+```bash
+python3 scripts/orquestador-sincronizacion --run --workers 3
 ```
 
-## 📝 Documentación
+El orquestador sincroniza y normaliza primero `00 Bibliografía y normatividad federal` y después procesa los estados. Esto es obligatorio porque bibliografía y normatividad federal se copian a todos los notebooks y Exceles por estado. Si se procesa un estado individual con `pipeline-por-estado`, también se analiza la carpeta compartida antes del estado; usa `--skip-common` solo cuando el orquestador ya la procesó en esa misma corrida.
 
-- **FINALIZACION_EJECUTIVA_PIPELINE_V3.md** ← LEER PRIMERO
-- **ESTADO_FINAL_PIPELINE_V3.md** - Detalles técnicos
-- **RESUMEN_EJECUTIVO_PIPELINE_V3.md** - Overview
-- **PROGRESO_MULTIAGENTE.md** - Por etapa
+Para validar y aplicar en Drive los nombres finales generados en local:
 
-## 🔧 Pre-requisitos
+```bash
+python3 scripts/actualizar-nombres-drive-desde-manifest --dry-run
+python3 scripts/actualizar-nombres-drive-desde-manifest
+```
 
-1. **Google Drive token** en `~/.hermes/google_token.json`
-2. **Google Drive folder ID:** `1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85` ("09 FASP")
-3. **Python 3.8+** con `googleapiclient`, `pymupdf`, `openpyxl`
-4. **Hermes CLI** con soporte a `delegate_task` (subagentes)
+El resultado válido del último `--dry-run` después de aplicar cambios es `sin_cambios`. Si aparece `sin_file_id` o `file_id_no_resuelto`, la corrida debe considerarse bloqueada: el manifest perdió la relación con Drive y no debe aplicarse renombrado remoto.
 
-## 🎯 Etapas
+También puede integrarse al cierre del orquestador:
 
-| ETAPA | Descripción | Entrada | Salida | Status |
-|-------|-------------|---------|--------|--------|
-| **0** | Sincronización desde Drive | Google Drive (10 carpetas) | 67 archivos en `/09 FASP/` | ✅ |
-| **1** | Renombrado (FASP_2026_*_V10.pdf) | 44 PDFs | 44 PDFs renombrados | ✅ |
-| **2** | Extracción de metadatos | 44 PDFs | 10 Exceles | ✅ |
-| **3** | Integración corpusintegrado/ | 44 PDFs renombrados | 44 PDFs únicos (2.5 GB) | ✅ |
-| **4** | Distribución por estado | 44 PDFs | 113 PDFs distribuidos | ✅ |
-| **8** | Sincronización a Drive | corpusintegrado/ + exceles/ | 41 PDFs + 10 Exceles en Drive | ✅ |
+```bash
+python3 scripts/orquestador-sincronizacion --run --workers 3 --rename-drive
+```
 
-## 🔗 Scripts
+## Recuperación de un estado incompleto
 
-- `etapa-0-sincronizar-completo` - ETAPA 0 (multiagente)
-- `etapa-1-renombrado` - ETAPA 1 (44 PDFs)
-- `etapa-2-extraccion-exceles` - ETAPA 2 (10 Exceles)
-- `etapa-3-integracion-corpusintegrado` - ETAPA 3 (integración)
-- `etapa-4-distribucion-por-estado` - ETAPA 4 (distribución)
-- `etapa-8-sincronizar-drive-completa` - ETAPA 8 (backup)
-- `pipeline-por-estado` - Pipeline completo por estado
-- `sincronizar-carpeta-drive` - Sincronizador por carpeta
-- `analizar-carpeta` - Analizador completitud
-- `listar-carpetas-drive` - Listador Drive
+Si una carpeta de estado en Drive conserva archivos sin renombrar o el Excel muestra menos documentos que Drive, no ejecutes `etapa-8`. Rebaselinea solo ese estado desde Drive y conserva la trazabilidad por `fileId`:
 
-## ⚡ Performance
+```bash
+python3 scripts/sincronizar-carpeta-drive "07 Tamaulipas Jackie"
+python3 scripts/analizar-y-versionar-pdfs --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie"
+python3 scripts/actualizar-nombres-drive-desde-manifest --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie" --dry-run
+python3 scripts/actualizar-nombres-drive-desde-manifest --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie"
+python3 scripts/etapa-2-extraccion-exceles --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie"
+python3 scripts/sincronizar-exceles-drive --dry-run
+python3 scripts/sincronizar-exceles-drive
+```
 
-- **Sincronización (ETAPA 0):** 6 min (multiagente) vs 30 min (secuencial)
-- **Renombrado (ETAPA 1):** 68 segundos
-- **Extracción (ETAPA 2):** 7 segundos
-- **Integración (ETAPA 3):** 8 segundos
-- **Distribución (ETAPA 4):** 10 segundos
-- **Backup (ETAPA 8):** 102 segundos
+El `--dry-run` de renombrado debe terminar con `sin_cambios` después de aplicar. Si aparecen `sin_file_id` o `file_id_no_resuelto`, detén la actualización: el manifest no puede relacionar el archivo local con Drive.
 
-**Total: 20 minutos** (vs ~2 horas secuencial = **5.6x más rápido**)
+Para preparar carpetas locales de carga a NotebookLM Pro, genera un corpus por estado con bibliografía común, normativa federal común y normativa estatal:
 
-## ⚠️ Common Pitfalls
+```bash
+python3 scripts/preparar-notebooklm-por-estado
+```
 
-1. No renovar Google Drive token
-2. Ejecutar ETAPA 3 después de ETAPA 4 (orden incorrecto)
-3. corpus_por_estado_v2 debe tener **copias reales**, no enlaces simbólicos
-4. Cambiar nomenclatura FASP_2026_P1_EST_*_V10.pdf sin actualizar scripts
-5. "16 errores en ETAPA 8" son reintentos de duplicados, NO bloqueadores
+La salida queda en `notebooklm/<estado>/` con:
 
-## 📊 Estado (v1.0 — Operacional)
+- `00_Bibliografia`
+- `01_Normativa_Federal`
+- `02_Normativa_Estatal`
+- `FUENTES_NOTEBOOKLM.md`
+- `manifest_notebooklm.json`
 
-| Componente | Estado |
-|---|---|
-| ETAPA 0 | ✅ Funcional (multiagente 10 subagentes) |
-| ETAPA 1 | ✅ Funcional (44 PDFs) |
-| ETAPA 2 | ✅ Funcional (10 Exceles) |
-| ETAPA 3 | ✅ Funcional (44 PDFs corpusintegrado/) |
-| ETAPA 4 | ✅ Funcional (113 PDFs por estado) |
-| ETAPA 8 | ✅ Funcional (41 PDFs + 10 Exceles subidos) |
-| Multiagente | ✅ Funcional (5.6x speedup) |
-| Cron automático | 📋 Pendiente |
-| Compartida (Bib+NormFed) | 📋 Pendiente |
+Para publicar esa misma estructura como carpeta intermedia en Google Drive, sincroniza el corpus local hacia `FASP_NBLM`:
 
-## 🔄 Próximos Pasos
+```bash
+python3 scripts/preparar-notebooklm-por-estado
+python3 scripts/sincronizar-notebooklm-drive --dry-run
+python3 scripts/sincronizar-notebooklm-drive
+```
 
-1. Reintentar ETAPA 8 para Hidalgo/Querétaro (3 PDFs)
-2. Ejecutar Compartida (Bibliografía + Normatividad Federal)
-3. Implementar Cron 14:00 & 20:00 hrs
-4. Verificar integridad Drive
+La preparación local es obligatoria antes de sincronizar Drive. `sincronizar-notebooklm-drive` valida que cada PDF en `09 FASP/<estado>/01 Normatividad estatal` exista también en `notebooklm/<estado>/02_Normativa_Estatal`; si falta alguno, bloquea la publicación y pide regenerar con `preparar-notebooklm-por-estado`.
 
-## 📄 Licencia
+Este paso crea o reutiliza `FASP_NBLM` en Mi unidad y replica las subcarpetas de `notebooklm/<estado>/`. La ejecución es incremental: cada archivo subido registra su SHA en Drive y se omite cuando el contenido local no cambió. Si el archivo existe pero cambió, se actualiza en el mismo `fileId`; no crea duplicados. No elimina archivos remotos por defecto.
 
-MIT
+Además genera una carpeta de novedades por corrida en `FASP_NBLM_NOVEDADES/<fecha_hora>/`, por ejemplo `FASP_NBLM_NOVEDADES/2026-07-25_211500/`. Esa carpeta se crea en cada ejecución real y contiene solo PDFs nuevos o modificados, preservando la ruta por estado y sección. En NotebookLM, después de la primera carga completa, usa esta carpeta de novedades para agregar fuentes sin tener que seleccionar manualmente entre todo el corpus. Si no hay PDFs nuevos o modificados, la carpeta de ejecución queda vacía y sirve como evidencia de que no hubo novedades.
 
-## 👤 Autor
+Si necesitas recargar notebooks desde cero, convierte la carpeta de ejecución más reciente en paquete completo con todos los PDFs del corpus, incluyendo `00_Bibliografia`, `01_Normativa_Federal` y `02_Normativa_Estatal` por estado:
 
-Alfredo Dominguez Díaz (ACEVAL FASP)
+```bash
+python3 scripts/cargar-corpus-completo-en-run-notebooklm
+```
 
-## 🔗 Relacionado
+También puedes indicar una corrida específica:
 
-- `fasp-document-pipeline` - Análisis jurídico-LLM del corpus
-- `distributed-data-sync-orchestration` - Patrón multiagente genérico
+```bash
+python3 scripts/cargar-corpus-completo-en-run-notebooklm --run-label 2026-07-25_222247
+```
+
+Si se requiere una etiqueta específica para la corrida:
+
+```bash
+python3 scripts/sincronizar-notebooklm-drive --run-label 2026-07-25_211500
+```
+
+## Garantías operativas
+
+- La sincronización descarga archivos nuevos o modificados según su versión en Drive.
+- La publicación remota de V4 usa `actualizar-nombres-drive-desde-manifest`, `sincronizar-exceles-drive` y `sincronizar-notebooklm-drive`; `etapa-8` queda bloqueada por obsoleta.
+- Un choque de nombres normalizados conserva ambos PDFs; nunca elimina uno automáticamente.
+- Los manifests conservan `drive_file_id`; no se depende del nombre visible para actualizar Drive.
+- `sin_file_id` y `file_id_no_resuelto` son errores bloqueantes en el renombrado remoto.
+- La integración rechaza nombres duplicados antes de modificar el corpus existente.
+- La integración y distribución deduplican por SHA para evitar acumulación en corridas incrementales.
+- El corpus NotebookLM se genera aparte de `corpusintegrado`; no modifica Drive ni crea notebooks automáticamente.
+- La sincronización NotebookLM bloquea la publicación si el corpus local no cubre los PDFs estatales existentes en `09 FASP`.
+- `FASP_NBLM` es una carpeta intermedia en Drive para importar fuentes a NotebookLM; el pipeline puede actualizarla, pero la creación del notebook en NotebookLM Pro sigue siendo manual.
+- `FASP_NBLM_NOVEDADES/<fecha_hora>` se crea en cada ejecución real y contiene únicamente PDFs nuevos o modificados para agregarlos manualmente al notebook sin revisar todo el corpus.
+- `FASP_EXCELES` es la carpeta estable en Drive para publicar los libros generados; se actualiza por SHA y evita duplicados.
+- La distribución se publica de forma completa y respalda la salida anterior, evitando PDFs obsoletos.
+- El manifiesto del corpus registra origen, tamaño y SHA-256 de cada PDF.
+
+## Pruebas
+
+```bash
+python3 -m unittest discover -s tests -v
+```

@@ -1,152 +1,245 @@
 #!/usr/bin/env python3
-"""
-etapa_2_extraccion_exceles.py - ETAPA 2: Extrae datos de PDFs y crea exceles
-Lee PDFs renombrados de /09 FASP/ y extrae metadatos
-"""
+"""ETAPA 2: extrae metadatos reales de PDFs y genera cuatro libros Excel."""
 
-from pathlib import Path
-from datetime import datetime
-import json
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
+import argparse
 import re
+import unicodedata
+from datetime import datetime
+from pathlib import Path
+from typing import List
 
-WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+from openpyxl import Workbook
+from openpyxl.styles import Font
+
+from pipeline_common import content_label, read_json, sha256_file, work_dir
+
+
+WORK_DIR = work_dir()
 FASP_LOCAL = WORK_DIR / "09 FASP"
 EXCELES_DIR = WORK_DIR / "exceles"
-LOG_FILE = WORK_DIR / "logs" / f"etapa_2_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+COMMON_DIR = FASP_LOCAL / "00 Bibliografía y normatividad federal"
+STATE_CODES = {"MEX": "EdoMex", "HID": "Hidalgo", "QRO": "Queretaro", "MIC": "Michoacan", "CHI": "Chiapas", "TAB": "Tabasco", "TAM": "Tamaulipas", "ZAC": "Zacatecas"}
+SUPPORTED_SUFFIXES = {".pdf", ".xlsx", ".xls", ".csv", ".tsv"}
+DRIVE_SUFFIX_PATTERN = re.compile(r"__drive-([A-Za-z0-9]+)", re.IGNORECASE)
 
-def log_msg(msg, nivel="INFO"):
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    line = f"[{timestamp}] {nivel}: {msg}"
-    print(line)
-    LOG_FILE.parent.mkdir(exist_ok=True)
-    with open(LOG_FILE, 'a') as f:
-        f.write(line + "\n")
 
-print("\n" + "="*80)
-print("ETAPA 2: EXTRACCIÓN DE DATOS Y CREACIÓN DE EXCELES")
-print("="*80)
+def classify(filename: str) -> str:
+    upper = filename.upper()
+    if "_BIB-" in upper:
+        return "Bibliografia"
+    if "_NAL_" in upper or "_NORFED" in upper:
+        return "Normatividad Federal"
+    if "_TDR-" in upper:
+        return "TDR"
+    if any(f"_{code}_" in upper for code in STATE_CODES):
+        return "Normatividad Estatal"
+    return "Otros"
 
-try:
-    EXCELES_DIR.mkdir(exist_ok=True)
-    
-    log_msg("Escaneando PDFs renombrados en /09 FASP/...")
-    
-    # Encontrar todos los PDFs
-    pdfs = list(FASP_LOCAL.rglob("*.pdf"))
-    log_msg(f"✅ Encontrados {len(pdfs)} PDFs")
-    
-    # Categorizar PDFs
-    categorias = {
-        "Bibliografía": [],
-        "Normatividad Federal": [],
-        "Normatividad Estatal": [],
-        "TDR": [],
-        "Otros": []
+
+def state(filename: str) -> str:
+    upper = filename.upper()
+    return next((name for code, name in STATE_CODES.items() if f"_{code}_" in upper), "Federal")
+
+
+def clean_metadata_value(value: str | None) -> str:
+    return re.sub(r"\s+", " ", value or "").strip()
+
+
+def clean_pdf_date(value: str | None) -> str:
+    value = clean_metadata_value(value)
+    match = re.match(r"D:(\d{4})(\d{2})?(\d{2})?", value)
+    if not match:
+        return value
+    year, month, day = match.groups()
+    if month and day:
+        return f"{year}-{month}-{day}"
+    if month:
+        return f"{year}-{month}"
+    return year
+
+
+def filename_title(path: Path) -> str:
+    stem = DRIVE_SUFFIX_PATTERN.sub("", path.stem)
+    stem = re.sub(r"_V\d+(?:\.\d+)?$", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^FASP_\d{4}_P\d+_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^(NAL|MEX|HID|QRO|MIC|CHI|TAB|TAM|ZAC)_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^(BIB|NORFED|NOR|DOC|TDR)[-_]?", "", stem, flags=re.IGNORECASE)
+    text = unicodedata.normalize("NFKD", stem).encode("ascii", "ignore").decode("ascii")
+    text = re.sub(r"[_-]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.title() if text else path.stem
+
+
+def clean_local_name(path: Path) -> str:
+    return f"{DRIVE_SUFFIX_PATTERN.sub('', path.stem)}{path.suffix}"
+
+
+def drive_id_prefix(file_name: str) -> str | None:
+    match = DRIVE_SUFFIX_PATTERN.search(file_name)
+    return match.group(1) if match else None
+
+
+def snapshot_id_by_prefix(snapshot: dict) -> dict[str, str]:
+    candidates = {}
+    for file_id in snapshot.get("files", {}):
+        safe_id = re.sub(r"[^A-Za-z0-9]", "", file_id)
+        for length in range(8, min(len(safe_id), 32) + 1):
+            candidates.setdefault(safe_id[:length], set()).add(file_id)
+    return {prefix: next(iter(ids)) for prefix, ids in candidates.items() if len(ids) == 1}
+
+
+def manifest_drive_ids(source: Path) -> dict[str, str]:
+    manifest = read_json(source / "contenido_manifest.json", {"files": []})
+    return {record.get("final_name"): record.get("drive_file_id", "") for record in manifest.get("files", []) if record.get("final_name")}
+
+
+def drive_info(path: Path, source: Path, snapshot: dict, manifest_ids: dict[str, str]) -> dict:
+    prefix = drive_id_prefix(path.name)
+    drive_ids = snapshot_id_by_prefix(snapshot)
+    file_id = manifest_ids.get(path.name) or (drive_ids.get(prefix) if prefix else "")
+    item = snapshot.get("files", {}).get(file_id, {}) if file_id else {}
+    return {
+        "drive_file_id": file_id,
+        "drive_path": item.get("path", ""),
+        "drive_link": item.get("webViewLink", ""),
+        "mime_type": item.get("mimeType", ""),
     }
-    
-    for pdf in pdfs:
-        nombre = pdf.name
-        if "_BIB-" in nombre:
-            categorias["Bibliografía"].append((nombre, pdf))
-        elif "_NAL_" in nombre or "_NORFED" in nombre:
-            categorias["Normatividad Federal"].append((nombre, pdf))
-        elif "_TDR-" in nombre:
-            categorias["TDR"].append((nombre, pdf))
-        elif any(x in nombre for x in ["_MEX_", "_HID_", "_QRO_", "_MIC_", "_CHI_", "_TAB_", "_TAM_", "_ZAC_"]):
-            categorias["Normatividad Estatal"].append((nombre, pdf))
-        else:
-            categorias["Otros"].append((nombre, pdf))
-    
-    log_msg(f"Categorización completada:")
-    for cat, items in categorias.items():
-        log_msg(f"  - {cat}: {len(items)}")
-    
-    # Crear excel CORPUS_MAESTRO
-    wb_maestro = Workbook()
-    ws = wb_maestro.active
-    ws.title = "Corpus Maestro"
-    
-    headers = ["Nombre Renombrado", "Tipo", "Estado", "Tamaño (KB)", "Ruta"]
-    ws.append(headers)
-    
-    row = 2
-    for cat, items in categorias.items():
-        for nombre, path in items:
-            estado = "Federal"
-            if "_MEX_" in nombre: estado = "EdoMex"
-            elif "_HID_" in nombre: estado = "Hidalgo"
-            elif "_QRO_" in nombre: estado = "Querétaro"
-            elif "_MIC_" in nombre: estado = "Michoacán"
-            elif "_CHI_" in nombre: estado = "Chiapas"
-            elif "_TAB_" in nombre: estado = "Tabasco"
-            elif "_TAM_" in nombre: estado = "Tamaulipas"
-            elif "_ZAC_" in nombre: estado = "Zacatecas"
-            
-            tamaño_kb = path.stat().st_size / 1024
-            ws[f"A{row}"] = nombre
-            ws[f"B{row}"] = cat
-            ws[f"C{row}"] = estado
-            ws[f"D{row}"] = f"{tamaño_kb:.1f}"
-            ws[f"E{row}"] = str(path)
-            row += 1
-    
-    maestro_path = EXCELES_DIR / "00_CORPUS_MAESTRO.xlsx"
-    wb_maestro.save(maestro_path)
-    log_msg(f"✅ Creado: {maestro_path.name}")
-    
-    # Crear excel Bibliografía
-    wb_bib = Workbook()
-    ws = wb_bib.active
-    ws.title = "Bibliografía"
-    ws.append(["Archivo PDF", "Autor", "Año", "Título", "Editorial", "Tema"])
-    
-    for nombre, path in categorias["Bibliografía"]:
-        ws.append([nombre, "[Extraer]", "[Extraer]", "[Extraer]", "[Extraer]", "[Extraer]"])
-    
-    bib_path = EXCELES_DIR / "01_bibliografía.xlsx"
-    wb_bib.save(bib_path)
-    log_msg(f"✅ Creado: {bib_path.name}")
-    
-    # Crear excel Normatividad Federal
-    wb_fed = Workbook()
-    ws = wb_fed.active
-    ws.title = "Normatividad Federal"
-    ws.append(["Archivo PDF", "Tipo Normativo", "Número", "Vigencia", "Ámbito Aplicación"])
-    
-    for nombre, path in categorias["Normatividad Federal"]:
-        ws.append([nombre, "[Extraer]", "[Extraer]", "[Extraer]", "[Extraer]"])
-    
-    fed_path = EXCELES_DIR / "01_normatividad_federal.xlsx"
-    wb_fed.save(fed_path)
-    log_msg(f"✅ Creado: {fed_path.name}")
-    
-    # Crear excel Normatividad Estatal
-    wb_est = Workbook()
-    ws = wb_est.active
-    ws.title = "Normatividad Estatal"
-    ws.append(["Archivo PDF", "Estado", "Tipo Normativo", "Número", "Vigencia"])
-    
-    for nombre, path in categorias["Normatividad Estatal"]:
-        # Extraer estado del nombre
-        estado = "Desconocido"
-        if "_MEX_" in nombre: estado = "EdoMex"
-        elif "_HID_" in nombre: estado = "Hidalgo"
-        elif "_QRO_" in nombre: estado = "Querétaro"
-        
-        ws.append([nombre, estado, "[Extraer]", "[Extraer]", "[Extraer]"])
-    
-    est_path = EXCELES_DIR / "01_normatividad_estatal.xlsx"
-    wb_est.save(est_path)
-    log_msg(f"✅ Creado: {est_path.name}")
-    
-    log_msg("✅ ETAPA 2 COMPLETADA - Exceles creados exitosamente")
-    
-    print("\n✅ ETAPA 2 FINALIZADA")
-    print(f"Log guardado: {LOG_FILE}")
-    print(f"Exceles guardados en: {EXCELES_DIR}")
-    
-except Exception as e:
-    log_msg(f"❌ Error en ETAPA 2: {str(e)}", "ERROR")
-    raise
+
+
+def inferred_title(path: Path, metadata_title: str, text: str) -> tuple[str, str]:
+    metadata_title = clean_metadata_value(metadata_title)
+    if metadata_title:
+        return metadata_title, "metadatos_pdf"
+    label = content_label(text, "")
+    if label != "CONTENIDO_SIN_TITULO":
+        return label.replace("_", " ").title(), "texto_pdf"
+    return filename_title(path), "nombre_archivo"
+
+
+def pdf_metadata(path: Path) -> dict:
+    try:
+        import fitz
+    except ImportError as error:
+        raise RuntimeError("Falta PyMuPDF; instala la dependencia 'pymupdf'.") from error
+    with fitz.open(path) as document:
+        document_metadata = document.metadata or {}
+        text_blocks = []
+        for page_index in range(min(document.page_count, 3)):
+            text = document[page_index].get_text("text").replace("\n", " ").strip()
+            if text:
+                text_blocks.append(text)
+        extracted_text = " ".join(text_blocks)
+        preview = re.sub(r"\s+", " ", extracted_text).strip()[:800]
+        title, title_source = inferred_title(path, document_metadata.get("title", ""), extracted_text)
+        return {
+            "paginas": document.page_count,
+            "titulo": title,
+            "fuente_titulo": title_source,
+            "autor": clean_metadata_value(document_metadata.get("author", "")) or "No identificado",
+            "fecha": clean_pdf_date(document_metadata.get("creationDate", "")),
+            "extracto": preview,
+            "estado_texto": "con_texto" if preview else "sin_texto_extraible",
+        }
+
+
+def generic_metadata(path: Path) -> dict:
+    title = filename_title(path)
+    return {
+        "paginas": "",
+        "titulo": title,
+        "fuente_titulo": "nombre_archivo",
+        "autor": "No aplica",
+        "fecha": "",
+        "extracto": "",
+        "estado_texto": "no_pdf",
+    }
+
+
+def metadata(path: Path) -> dict:
+    if path.suffix.lower() == ".pdf":
+        return pdf_metadata(path)
+    return generic_metadata(path)
+
+
+def save_workbook(path: Path, title: str, headers: List[str], rows: List[List[str]]) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = title[:31]
+    worksheet.append(headers)
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+    for row in rows:
+        worksheet.append(row)
+    worksheet.freeze_panes = "A2"
+    for column in worksheet.columns:
+        letter = column[0].column_letter
+        worksheet.column_dimensions[letter].width = min(max(len(str(cell.value or "")) for cell in column) + 2, 60)
+    workbook.save(path)
+
+
+def input_documents(source: Path, include_common: bool = False) -> list[Path]:
+    roots = [source]
+    if include_common:
+        roots = [
+            COMMON_DIR / "01 Bibliografía",
+            COMMON_DIR / "02 Normatividad federal",
+            source,
+        ]
+    seen = {}
+    files = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for document in sorted(item for item in root.rglob("*") if item.is_file() and item.suffix.lower() in SUPPORTED_SUFFIXES):
+            digest = sha256_file(document)
+            if digest in seen:
+                previous_index = seen[digest]
+                previous = files[previous_index]
+                if drive_id_prefix(document.name) and not drive_id_prefix(previous.name):
+                    files[previous_index] = document
+                continue
+            seen[digest] = len(files)
+            files.append(document)
+    return files
+
+
+def input_pdfs(source: Path, include_common: bool = False) -> list[Path]:
+    return [item for item in input_documents(source, include_common) if item.suffix.lower() == ".pdf"]
+
+
+def extract(source: Path, output: Path, include_common: bool = False) -> int:
+    if not source.exists():
+        raise FileNotFoundError(f"Directorio fuente no existe: {source}")
+    output.mkdir(parents=True, exist_ok=True)
+    snapshot = read_json(WORK_DIR / ".drive_snapshot.json", {"files": {}})
+    manifest_ids = manifest_drive_ids(source)
+    records = []
+    for document in input_documents(source, include_common):
+        data = metadata(document)
+        records.append({"path": document, "category": classify(document.name), "state": state(document.name), **drive_info(document, source, snapshot, manifest_ids), **data})
+    headers = ["Archivo", "Tipo Archivo", "Categoria", "Estado", "Paginas", "Tamano KB", "Titulo", "Fuente Titulo", "Autor PDF", "Fecha PDF", "Estado Texto", "Extracto", "SHA256", "Drive File ID", "Ruta Drive", "Link Drive", "Ruta Local"]
+    rows = [[clean_local_name(r["path"]), r["path"].suffix.lower().lstrip("."), r["category"], r["state"], r["paginas"], round(r["path"].stat().st_size / 1024, 1), r["titulo"], r["fuente_titulo"], r["autor"], r["fecha"], r["estado_texto"], r["extracto"], sha256_file(r["path"]), r["drive_file_id"], r["drive_path"], r["drive_link"], str(r["path"])] for r in records]
+    save_workbook(output / "00_CORPUS_MAESTRO.xlsx", "Corpus Maestro", headers, rows)
+    for category, filename in (("Bibliografia", "01_bibliografia.xlsx"), ("Normatividad Federal", "02_normatividad_federal.xlsx"), ("Normatividad Estatal", "03_normatividad_estatal.xlsx")):
+        selected = [row for row, record in zip(rows, records) if record["category"] == category]
+        save_workbook(output / filename, category, headers, selected)
+    return len(records)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=Path, default=FASP_LOCAL)
+    parser.add_argument("--output", type=Path, default=EXCELES_DIR)
+    parser.add_argument("--include-common", action="store_true", help="Incluye bibliografía y normativa federal común al generar Excel por estado.")
+    args = parser.parse_args()
+    try:
+        count = extract(args.source, args.output, args.include_common)
+    except (OSError, RuntimeError) as error:
+        print(f"ERROR: {error}")
+        return 1
+    print(f"ETAPA 2 completada: {count} documentos analizados; 4 Exceles generados")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

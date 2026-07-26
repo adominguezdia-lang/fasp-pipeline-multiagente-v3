@@ -12,12 +12,14 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 import io
 import json
+from pipeline_common import drive_local_path, read_json, token_path, work_dir, write_json
 
-WORK_DIR = Path("/Users/adominguezdia/Documents/FASP")
+WORK_DIR = work_dir()
 FASP_LOCAL = WORK_DIR / "09 FASP"
-TOKEN_PATH = Path.home() / ".hermes/google_token.json"
+TOKEN_PATH = token_path()
 DRIVE_FOLDER_ID = "1fMCP-xvtUfvUMO8h0pMi3V4nFbqnUG85"
 LOG_FILE = WORK_DIR / "logs" / f"etapa_0_completo_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+SNAPSHOT_FILE = WORK_DIR / ".drive_snapshot.json"
 
 # Extensiones de video a EXCLUIR
 EXTENSIONES_EXCLUIR = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.flv', '.wmv', '.webm', '.m4a', '.wav'}
@@ -62,8 +64,10 @@ def descargar_archivo(service, file_id, file_name, dest_path):
             status, done = downloader.next_chunk()
         
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(dest_path, 'wb') as f:
+        temporary = dest_path.with_suffix(dest_path.suffix + ".download")
+        with open(temporary, 'wb') as f:
             f.write(fh.getvalue())
+        temporary.replace(dest_path)
         
         return True
     except Exception as e:
@@ -82,7 +86,7 @@ def listar_todo_recursivo(service, parent_id, path_prefix=""):
             results = service.files().list(
                 q=query,
                 spaces='drive',
-                fields='files(id, name, mimeType, size)',
+                fields='files(id, name, mimeType, size, modifiedTime, md5Checksum)',
                 pageSize=1000,
                 pageToken=page_token
             ).execute()
@@ -110,7 +114,9 @@ def listar_todo_recursivo(service, parent_id, path_prefix=""):
                         'name': item['name'],
                         'path': current_path,
                         'size': int(item.get('size', 0)),
-                        'mime': item['mimeType']
+                        'mime': item['mimeType'],
+                        'modifiedTime': item.get('modifiedTime'),
+                        'md5Checksum': item.get('md5Checksum')
                     })
             
             page_token = results.get('nextPageToken')
@@ -158,14 +164,9 @@ try:
     for ext, count in sorted(tipos.items(), key=lambda x: x[1], reverse=True):
         log_msg(f"   {ext}: {count} archivos")
     
-    # Comparar con local
-    archivos_locales = set()
-    for f in FASP_LOCAL.rglob("*"):
-        if f.is_file():
-            rel_path = f.relative_to(FASP_LOCAL)
-            archivos_locales.add(str(rel_path))
-    
-    log_msg(f"\n📁 Local ya tiene: {len(archivos_locales)} archivos")
+    snapshot = read_json(SNAPSHOT_FILE, {"files": {}})
+    archivos_previos = snapshot.get("files", {})
+    log_msg(f"\n📁 Archivo de control contiene: {len(archivos_previos)} versiones")
     
     # Descargar nuevos/modificados
     log_msg("\n📥 Descargando archivos...")
@@ -173,16 +174,21 @@ try:
     saltados = 0
     
     for archivo in archivos_drive:
-        rel_path = str(Path(archivo['path']))
+        rel_path = str(drive_local_path(archivo['path'], archivo['id']))
         
-        if rel_path in archivos_locales:
-            log_msg(f"⏭️  Ya existe: {archivo['name']}")
+        dest = FASP_LOCAL / rel_path
+        remote_version = {
+            "id": archivo["id"], "size": archivo["size"],
+            "modifiedTime": archivo.get("modifiedTime"), "md5Checksum": archivo.get("md5Checksum"),
+        }
+        if dest.exists() and archivos_previos.get(archivo["id"]) == remote_version:
+            log_msg(f"⏭️  Sin cambios: {archivo['name']}")
             saltados += 1
         else:
-            log_msg(f"⬇️  Descargando: {archivo['name']}")
-            dest = FASP_LOCAL / rel_path
+            log_msg(f"⬇️  Descargando o actualizando: {archivo['name']}")
             if descargar_archivo(service, archivo['id'], archivo['name'], dest):
                 descargados += 1
+                archivos_previos[archivo["id"]] = remote_version
             
             if (descargados + saltados) % 10 == 0:
                 log_msg(f"   Progreso: {descargados + saltados}/{len(archivos_drive)}")
@@ -190,6 +196,7 @@ try:
     log_msg(f"\n✅ Descargados: {descargados} archivos nuevos")
     log_msg(f"⏭️  Saltados: {saltados} archivos existentes")
     log_msg(f"📊 Total Drive (sin videos): {len(archivos_drive)}")
+    write_json(SNAPSHOT_FILE, {"updatedAt": datetime.now().isoformat(), "files": archivos_previos})
     
     # Verificación final
     archivos_finales = list(FASP_LOCAL.rglob("*"))
