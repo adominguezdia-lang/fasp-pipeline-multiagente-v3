@@ -401,6 +401,9 @@ class PipelineSafetyTests(unittest.TestCase):
             "novedades_corrida": None,
         })
 
+    def test_notebooklm_drive_default_run_label_includes_date_and_time(self):
+        self.assertRegex(notebooklm_drive.default_run_label(), r"^\d{4}-\d{2}-\d{2}_\d{6}$")
+
     def test_notebooklm_drive_unchanged_file_uses_sha_property(self):
         class Files:
             def list(self, **kwargs):

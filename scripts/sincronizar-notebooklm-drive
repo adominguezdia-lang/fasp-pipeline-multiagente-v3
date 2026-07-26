@@ -23,6 +23,10 @@ def drive_folder_url(folder_id: str | None) -> str | None:
     return f"https://drive.google.com/drive/folders/{folder_id}"
 
 
+def default_run_label() -> str:
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+
 def report_links(report: dict) -> dict:
     links = {
         "corpus": None,
@@ -267,7 +271,7 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=WORK_DIR / "notebooklm")
     parser.add_argument("--drive-root-name", default="FASP_NBLM")
     parser.add_argument("--novedades-root-name", default="FASP_NBLM_NOVEDADES")
-    parser.add_argument("--run-label", default=datetime.now().strftime("%Y-%m-%d"))
+    parser.add_argument("--run-label", default=default_run_label())
     parser.add_argument("--no-novedades", action="store_true")
     parser.add_argument("--parent-id", default="root", help="Carpeta padre en Drive; por defecto, Mi unidad.")
     parser.add_argument("--dry-run", action="store_true")
