@@ -182,7 +182,12 @@ def sync_file(service, path: Path, source: Path, parent_id: str, dry_run: bool) 
 
 
 def novelty_candidates(actions: list[dict]) -> list[dict]:
-    return [item for item in actions if item.get("type") == "file" and item.get("status") in {"subir", "actualizar", "subido", "actualizado"}]
+    return [
+        item for item in actions
+        if item.get("type") == "file"
+        and item.get("status") in {"subir", "actualizar", "subido", "actualizado"}
+        and Path(item.get("path", "")).suffix.lower() == ".pdf"
+    ]
 
 
 def build_needed_folder_map(

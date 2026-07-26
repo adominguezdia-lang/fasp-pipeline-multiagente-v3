@@ -337,6 +337,8 @@ class PipelineSafetyTests(unittest.TestCase):
             {"type": "file", "status": "sin_cambios", "path": "a.pdf"},
             {"type": "file", "status": "subido", "path": "b.pdf"},
             {"type": "file", "status": "actualizado", "path": "c.pdf"},
+            {"type": "file", "status": "actualizado", "path": "FUENTES_NOTEBOOKLM.md"},
+            {"type": "file", "status": "actualizado", "path": "manifest_notebooklm.json"},
             {"type": "folder", "status": "carpeta_creada", "path": "folder"},
         ]
         paths = [item["path"] for item in notebooklm_drive.novelty_candidates(actions)]
