@@ -11,13 +11,38 @@ from pipeline_common import content_label, read_json, sha256_file, write_json
 
 
 VERSION_PATTERN = re.compile(r"_V\d+(?:\.\d+)?$", re.IGNORECASE)
-DRIVE_SUFFIX_PATTERN = re.compile(r"__drive-([A-Za-z0-9]+)", re.IGNORECASE)
+DRIVE_SUFFIX_PATTERN = re.compile(r"(?:__drive-|_DRIVE-)([A-Za-z0-9]+)", re.IGNORECASE)
+CANONICAL_PREFIX_PATTERN = re.compile(
+    r"^FASP_(?P<year>\d{4})_P(?P<period>\d+)_(?P<scope>[A-Z]{3})_(?P<kind>[A-Z]+)[-_]?(?P<description>.*)$",
+    re.IGNORECASE,
+)
+STATE_CODES = {
+    "edomex": "MEX",
+    "estado de mexico": "MEX",
+    "hidalgo": "HID",
+    "michoacan": "MIC",
+    "queretaro": "QRO",
+    "chiapas": "CHI",
+    "tabasco": "TAB",
+    "tamaulipas": "TAM",
+    "zacatecas": "ZAC",
+}
 
 
 def readable_token(value: str, separator: str = "-") -> str:
     ascii_value = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii")
     token = re.sub(r"[^A-Za-z0-9]+", separator, ascii_value.upper()).strip(separator)
     return re.sub(rf"{re.escape(separator)}+", separator, token)
+
+
+def normalize_version(version: str | None) -> str:
+    if not version:
+        return "V10"
+    version = version.upper().lstrip("_")
+    match = re.match(r"V(\d+)\.(\d+)$", version)
+    if match:
+        return f"V{match.group(1)}{match.group(2)}"
+    return version
 
 
 def original_stem(path: Path) -> str:
@@ -39,15 +64,65 @@ def snapshot_id_by_prefix(snapshot: dict) -> dict[str, str]:
     return {prefix: next(iter(ids)) for prefix, ids in candidates.items() if len(ids) == 1}
 
 
+def state_code_from_path(path: Path) -> str:
+    normalized_parts = [
+        re.sub(r"[^a-z0-9 ]+", " ", unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode("ascii").lower())
+        for part in path.parts
+    ]
+    for part in normalized_parts:
+        compact = re.sub(r"\s+", " ", part).strip()
+        for label, code in STATE_CODES.items():
+            if label in compact:
+                return code
+    return "NAL"
+
+
+def kind_from_path(path: Path) -> str:
+    normalized = " / ".join(
+        unicodedata.normalize("NFKD", part).encode("ascii", "ignore").decode("ascii").lower()
+        for part in path.parts
+    )
+    if "bibliografia" in normalized:
+        return "BIB"
+    if "normatividad federal" in normalized:
+        return "NORFED"
+    if "normatividad estatal" in normalized:
+        return "NOR"
+    if "tdr" in normalized:
+        return "TDR"
+    return "DOC"
+
+
+def strip_legacy_prefix(stem: str) -> str:
+    stem = re.sub(r"^FASP_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^\d{4}_P\d+_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^(NAL|MEX|HID|QRO|MIC|CHI|TAB|TAM|ZAC)_", "", stem, flags=re.IGNORECASE)
+    stem = re.sub(r"^(BIB|NORFED|NOR|DOC|TDR)[-_]?", "", stem, flags=re.IGNORECASE)
+    return stem
+
+
 def base_name(path: Path) -> tuple[str, str]:
     stem = original_stem(path)
     version_match = VERSION_PATTERN.search(stem)
-    version = version_match.group(0).lstrip("_").upper() if version_match else "V1.0"
-    base = VERSION_PATTERN.sub("", stem)
-    base = readable_token(base, "_")
-    if not base.startswith("FASP_"):
-        base = f"FASP_{base}"
-    return base[:96], version
+    version = normalize_version(version_match.group(0) if version_match else None)
+    stem_without_version = VERSION_PATTERN.sub("", stem)
+    canonical = CANONICAL_PREFIX_PATTERN.match(readable_token(stem_without_version, "_"))
+    if canonical:
+        year = canonical.group("year")
+        period = canonical.group("period")
+        scope = canonical.group("scope").upper()
+        kind = canonical.group("kind").upper()
+        description = readable_token(canonical.group("description"), "-")
+    else:
+        year = "2026"
+        period = "1"
+        scope = state_code_from_path(path)
+        kind = kind_from_path(path)
+        description = readable_token(strip_legacy_prefix(stem_without_version), "-")
+    if not description:
+        description = "DOCUMENTO"
+    base = f"FASP_{year}_P{period}_{scope}_{kind}-{description}"
+    return base[:140].rstrip("_-"), version
 
 
 def label_fragment(label: str) -> str:
@@ -58,7 +133,7 @@ def human_target_name(path: Path, label: str, duplicate_index: int | None = None
     base, version = base_name(path)
     if duplicate_index is not None:
         base = f"{base}_{label_fragment(label)}"[:140].rstrip("_-")
-        version = f"V1.{duplicate_index}"
+        version = f"V1{duplicate_index}"
     return f"{base}_{version}.pdf"
 
 
@@ -91,7 +166,8 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
         previous_record = previous.get(digest)
         if previous_record and pdf.name == previous_record.get("final_name"):
             previous_record = dict(previous_record)
-            previous_record["status"] = "sin_cambios"
+            canonical_name = human_target_name(pdf, previous_record.get("identificador_contenido", "CONTENIDO_SIN_TITULO"))
+            previous_record["status"] = "sin_cambios" if pdf.name == canonical_name else "requiere_renombrado"
             pending.append({
                 "path": pdf,
                 "document": {"title": previous_record.get("titulo_pdf", ""), "pages": previous_record.get("paginas", 0)},
@@ -125,7 +201,7 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
                 suffix += 1
             used_destinations.add(destination)
             final_path = pdf
-            if item.get("previous_record") and pdf.name == item["previous_record"].get("final_name"):
+            if item.get("previous_record") and pdf.name == item["previous_record"].get("final_name") and destination == pdf:
                 final_path = pdf
             elif destination != pdf and not dry_run:
                 pdf.rename(destination)
@@ -144,7 +220,7 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
                 "paginas": item["document"]["pages"],
                 "sha256": item["sha256"],
                 "drive_file_id": previous_record.get("drive_file_id") or drive_ids.get(drive_prefix or ""),
-                "status": "sin_cambios" if previous_record and pdf.name == previous_record.get("final_name") else "versionado",
+                "status": "sin_cambios" if previous_record.get("status") == "sin_cambios" and final_path == pdf else "versionado",
             })
     return {"timestamp": datetime.now().isoformat(), "total_pdfs": len(records), "files": records}
 

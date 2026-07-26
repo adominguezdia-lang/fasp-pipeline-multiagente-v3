@@ -91,9 +91,43 @@ class PipelineSafetyTests(unittest.TestCase):
             "Toluca de Lerdo México",
             duplicate_index=2,
         )
-        self.assertEqual(name, "FASP_2026_P1_MEX_DOC_DOCUMENTO_TOLUCA-DE-LERDO-MEXICO_V1.2.pdf")
+        self.assertEqual(name, "FASP_2026_P1_MEX_DOC-DOCUMENTO_TOLUCA-DE-LERDO-MEXICO_V12.pdf")
         self.assertNotIn("abc123", name)
         self.assertNotIn("__", name)
+
+    def test_content_version_name_canonicalizes_state_normativity(self):
+        name = analyzer.human_target_name(
+            Path("07 Tamaulipas Jackie/01 Normatividad estatal/FASP_LEY_ESTATAL_DE_PLANEACION_V1.0.pdf"),
+            "Ley Estatal de Planeacion",
+        )
+        self.assertEqual(name, "FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf")
+
+    def test_content_version_rewrites_previous_legacy_final_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "07 Tamaulipas Jackie" / "01 Normatividad estatal"
+            source.mkdir(parents=True)
+            pdf = source / "FASP_LEY_ESTATAL_DE_PLANEACION_V1.0.pdf"
+            pdf.write_bytes(b"pdf")
+            digest = analyzer.sha256_file(pdf)
+            (source / "contenido_manifest.json").write_text(
+                f"""{{
+                  "files": [
+                    {{
+                      "final_name": "FASP_LEY_ESTATAL_DE_PLANEACION_V1.0.pdf",
+                      "original_name": "Ley Estatal de Planeacion.pdf",
+                      "identificador_contenido": "LEY_ESTATAL_DE_PLANEACION",
+                      "version_contenido": "V1.0",
+                      "titulo_pdf": "",
+                      "paginas": 1,
+                      "sha256": "{digest}",
+                      "drive_file_id": "drive-id"
+                    }}
+                  ]
+                }}""",
+                encoding="utf-8",
+            )
+            manifest = analyzer.analyze(source, dry_run=True)
+            self.assertEqual(manifest["files"][0]["final_name"], "FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf")
 
     def test_normalize_filename_preserves_readable_version(self):
         name = renamer.normalize_filename("FASP_2026_P1_MEX_DOC-DOCUMENTO_Toluca de Lerdo México_V1.2.pdf")
@@ -363,12 +397,13 @@ class PipelineSafetyTests(unittest.TestCase):
             {"type": "file", "status": "sin_cambios", "path": "a.pdf"},
             {"type": "file", "status": "subido", "path": "b.pdf"},
             {"type": "file", "status": "actualizado", "path": "c.pdf"},
+            {"type": "file", "status": "renombrado", "path": "d.pdf"},
             {"type": "file", "status": "actualizado", "path": "FUENTES_NOTEBOOKLM.md"},
             {"type": "file", "status": "actualizado", "path": "manifest_notebooklm.json"},
             {"type": "folder", "status": "carpeta_creada", "path": "folder"},
         ]
         paths = [item["path"] for item in notebooklm_drive.novelty_candidates(actions)]
-        self.assertEqual(paths, ["b.pdf", "c.pdf"])
+        self.assertEqual(paths, ["b.pdf", "c.pdf", "d.pdf"])
 
     def test_notebooklm_drive_dry_run_creates_novelties_for_new_files(self):
         class Files:
@@ -482,6 +517,34 @@ class PipelineSafetyTests(unittest.TestCase):
             result = notebooklm_drive.sync_file(Service(), pdf, source, "parent", dry_run=False)
             self.assertEqual(result["status"], "sin_cambios")
             self.assertEqual(result["drive_id"], "file-id")
+
+    def test_notebooklm_drive_renames_existing_file_matched_by_sha(self):
+        class Files:
+            def list(self, **kwargs):
+                query = kwargs["q"]
+
+                class Request:
+                    def execute(self_inner):
+                        if "name='nuevo.pdf'" in query:
+                            return {"files": []}
+                        return {"files": [{"id": "file-id", "name": "viejo.pdf", "appProperties": {"fasp_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}}]}
+
+                return Request()
+
+        class Service:
+            def files(self):
+                return Files()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "notebooklm"
+            source.mkdir()
+            pdf = source / "nuevo.pdf"
+            pdf.write_bytes(b"hello")
+            result = notebooklm_drive.sync_file(Service(), pdf, source, "parent", dry_run=True)
+            self.assertEqual(result["status"], "renombrar")
+            self.assertEqual(result["drive_id"], "file-id")
+            self.assertEqual(result["previous_name"], "viejo.pdf")
 
     def test_exceles_drive_manifest_is_not_uploaded_as_excel_source(self):
         with tempfile.TemporaryDirectory() as temporary:

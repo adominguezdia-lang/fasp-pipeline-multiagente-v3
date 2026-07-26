@@ -55,6 +55,8 @@ Las salidas se guardan bajo `corpusintegrado/<estado>/`, `exceles/<estado>/` y `
 
 Durante el procesamiento se analiza el texto y los metadatos de cada PDF para obtener una etiqueta general a partir de su título o encabezado. Si Drive trae varios PDFs con el mismo nombre base pero contenido diferente, el pipeline conserva todos y genera nombres legibles para uso humano y NotebookLM, por ejemplo con una etiqueta breve de contenido y una versión visible (`V1.0`, `V1.1`, etc.). El SHA-256 queda en `contenido_manifest.json` para auditoría y trazabilidad, pero no aparece en el nombre final del archivo.
 
+Los nombres finales de PDFs deben seguir el patrón `FASP_2026_P1_<AMBITO>_<TIPO>-<DESCRIPCION>_V<VERSION>.pdf`. Para normatividad estatal, `<AMBITO>` es el código del estado (`MEX`, `HID`, `MIC`, `QRO`, `CHI`, `TAB`, `TAM`, `ZAC`) y `<TIPO>` es `NOR`; por ejemplo `FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf`. No son válidos nombres truncados como `FASP_LEY_ESTATAL_DE_PLANEACION_V1.0.pdf`.
+
 Para publicar o actualizar en Drive los Exceles generados, usa una carpeta estable `FASP_EXCELES`:
 
 ```bash

@@ -97,6 +97,25 @@ def find_child(service, parent_id: str, name: str, mime_type: str | None = None)
     return files[0] if files else None
 
 
+def find_child_by_sha(service, parent_id: str, digest: str) -> dict | None:
+    query = [
+        f"'{quote_query_value(parent_id)}' in parents",
+        f"appProperties has {{ key='fasp_sha256' and value='{quote_query_value(digest)}' }}",
+        "trashed=false",
+    ]
+    response = service.files().list(
+        q=" and ".join(query),
+        fields="files(id,name,mimeType,appProperties,size)",
+        pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+    files = response.get("files", [])
+    if len(files) > 1:
+        raise RuntimeError(f"Destino ambiguo en Drive: SHA {digest} tiene {len(files)} coincidencias en {parent_id}")
+    return files[0] if files else None
+
+
 def ensure_folder(service, parent_id: str, name: str, dry_run: bool) -> tuple[str, str]:
     if dry_run and parent_id.startswith("dry-run:"):
         return f"{parent_id}/{name}", "carpeta_crear"
@@ -198,7 +217,33 @@ def sync_file(service, path: Path, source: Path, parent_id: str, dry_run: bool) 
         "mimeType": mime_type,
     }
     if existing and existing.get("appProperties", {}).get("fasp_sha256") == digest:
+        if existing.get("name") != path.name:
+            if dry_run:
+                result.update({"status": "renombrar", "drive_id": existing["id"], "previous_name": existing.get("name")})
+                return result
+            updated = service.files().update(
+                fileId=existing["id"],
+                body={"name": path.name, "appProperties": {"fasp_sha256": digest, "fasp_source": "notebooklm"}},
+                fields="id,name,appProperties",
+                supportsAllDrives=True,
+            ).execute()
+            result.update({"status": "renombrado", "drive_id": updated["id"], "previous_name": existing.get("name")})
+            return result
         result.update({"status": "sin_cambios", "drive_id": existing["id"]})
+        return result
+
+    existing_by_sha = None if dry_run and parent_id.startswith("dry-run:") else find_child_by_sha(service, parent_id, digest)
+    if existing_by_sha and not existing:
+        if dry_run:
+            result.update({"status": "renombrar", "drive_id": existing_by_sha["id"], "previous_name": existing_by_sha.get("name")})
+            return result
+        updated = service.files().update(
+            fileId=existing_by_sha["id"],
+            body={"name": path.name, "appProperties": {"fasp_sha256": digest, "fasp_source": "notebooklm"}},
+            fields="id,name,appProperties",
+            supportsAllDrives=True,
+        ).execute()
+        result.update({"status": "renombrado", "drive_id": updated["id"], "previous_name": existing_by_sha.get("name")})
         return result
 
     if dry_run:
@@ -234,7 +279,7 @@ def novelty_candidates(actions: list[dict]) -> list[dict]:
     return [
         item for item in actions
         if item.get("type") == "file"
-        and item.get("status") in {"subir", "actualizar", "subido", "actualizado"}
+        and item.get("status") in {"subir", "actualizar", "renombrar", "subido", "actualizado", "renombrado"}
         and Path(item.get("path", "")).suffix.lower() == ".pdf"
     ]
 
