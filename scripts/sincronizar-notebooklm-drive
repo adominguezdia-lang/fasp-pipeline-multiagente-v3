@@ -15,6 +15,7 @@ from pipeline_common import read_json, sha256_file, token_path, work_dir, write_
 FOLDER_MIME = "application/vnd.google-apps.folder"
 WORK_DIR = work_dir()
 TOKEN_PATH = token_path()
+FASP_DIR = WORK_DIR / "09 FASP"
 
 
 def drive_folder_url(folder_id: str | None) -> str | None:
@@ -121,6 +122,54 @@ def iter_local_files(source: Path):
 def content_type(path: Path) -> str:
     guessed, _ = mimetypes.guess_type(path.name)
     return guessed or "application/octet-stream"
+
+
+def pdf_files(path: Path) -> list[Path]:
+    if not path.exists():
+        return []
+    return sorted(item for item in path.rglob("*.pdf") if item.is_file())
+
+
+def validate_notebooklm_corpus(source: Path, fasp_dir: Path = FASP_DIR) -> list[dict]:
+    if not fasp_dir.exists():
+        return []
+    missing = []
+    for state_dir in sorted(item for item in fasp_dir.iterdir() if item.is_dir()):
+        if state_dir.name.startswith("00 "):
+            continue
+        state_pdfs = pdf_files(state_dir / "01 Normatividad estatal")
+        if not state_pdfs:
+            continue
+        notebook_section = source / state_dir.name / "02_Normativa_Estatal"
+        notebook_shas = {sha256_file(path) for path in pdf_files(notebook_section)}
+        for pdf in state_pdfs:
+            digest = sha256_file(pdf)
+            if digest not in notebook_shas:
+                try:
+                    expected_section = str(notebook_section.relative_to(source))
+                except ValueError:
+                    expected_section = str(notebook_section)
+                missing.append({
+                    "state": state_dir.name,
+                    "source": str(pdf.relative_to(fasp_dir)),
+                    "expected_section": expected_section,
+                    "sha256": digest,
+                })
+    return missing
+
+
+def assert_notebooklm_corpus_current(source: Path, fasp_dir: Path = FASP_DIR) -> None:
+    missing = validate_notebooklm_corpus(source, fasp_dir)
+    if not missing:
+        return
+    examples = "\n".join(f"- {item['source']}" for item in missing[:10])
+    extra = "" if len(missing) <= 10 else f"\n- ... y {len(missing) - 10} más"
+    raise RuntimeError(
+        "Corpus NotebookLM local incompleto: hay PDFs estatales en 09 FASP que no existen "
+        "en notebooklm/<estado>/02_Normativa_Estatal.\n"
+        "Ejecuta primero: python3 scripts/preparar-notebooklm-por-estado\n"
+        f"Faltantes detectados: {len(missing)}\n{examples}{extra}"
+    )
 
 
 def build_folder_map(service, source: Path, root_folder_id: str, dry_run: bool) -> tuple[dict[Path, str], list[dict]]:
@@ -280,9 +329,13 @@ def main() -> int:
     parser.add_argument("--novedades-root-name", default="FASP_NBLM_NOVEDADES")
     parser.add_argument("--run-label", default=default_run_label())
     parser.add_argument("--no-novedades", action="store_true")
+    parser.add_argument("--skip-corpus-validation", action="store_true")
     parser.add_argument("--parent-id", default="root", help="Carpeta padre en Drive; por defecto, Mi unidad.")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    if not args.skip_corpus_validation:
+        assert_notebooklm_corpus_current(args.source)
 
     service = authenticate_drive()
     report = sync_tree(

@@ -118,9 +118,12 @@ La salida queda en `notebooklm/<estado>/` con:
 Para publicar esa misma estructura como carpeta intermedia en Google Drive, sincroniza el corpus local hacia `FASP_NBLM`:
 
 ```bash
+python3 scripts/preparar-notebooklm-por-estado
 python3 scripts/sincronizar-notebooklm-drive --dry-run
 python3 scripts/sincronizar-notebooklm-drive
 ```
+
+La preparación local es obligatoria antes de sincronizar Drive. `sincronizar-notebooklm-drive` valida que cada PDF en `09 FASP/<estado>/01 Normatividad estatal` exista también en `notebooklm/<estado>/02_Normativa_Estatal`; si falta alguno, bloquea la publicación y pide regenerar con `preparar-notebooklm-por-estado`.
 
 Este paso crea o reutiliza `FASP_NBLM` en Mi unidad y replica las subcarpetas de `notebooklm/<estado>/`. La ejecución es incremental: cada archivo subido registra su SHA en Drive y se omite cuando el contenido local no cambió. Si el archivo existe pero cambió, se actualiza en el mismo `fileId`; no crea duplicados. No elimina archivos remotos por defecto.
 
@@ -142,6 +145,7 @@ python3 scripts/sincronizar-notebooklm-drive --run-label 2026-07-25_211500
 - La integración rechaza nombres duplicados antes de modificar el corpus existente.
 - La integración y distribución deduplican por SHA para evitar acumulación en corridas incrementales.
 - El corpus NotebookLM se genera aparte de `corpusintegrado`; no modifica Drive ni crea notebooks automáticamente.
+- La sincronización NotebookLM bloquea la publicación si el corpus local no cubre los PDFs estatales existentes en `09 FASP`.
 - `FASP_NBLM` es una carpeta intermedia en Drive para importar fuentes a NotebookLM; el pipeline puede actualizarla, pero la creación del notebook en NotebookLM Pro sigue siendo manual.
 - `FASP_NBLM_NOVEDADES/<fecha_hora>` se crea en cada ejecución real y contiene únicamente PDFs nuevos o modificados para agregarlos manualmente al notebook sin revisar todo el corpus.
 - `FASP_EXCELES` es la carpeta estable en Drive para publicar los libros generados; se actualiza por SHA y evita duplicados.

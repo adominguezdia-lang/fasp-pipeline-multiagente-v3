@@ -308,6 +308,32 @@ class PipelineSafetyTests(unittest.TestCase):
             self.assertIn("01_Normativa_Federal", text)
             self.assertIn("02_Normativa_Estatal", text)
 
+    def test_notebooklm_drive_blocks_when_state_sources_are_missing_from_corpus(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fasp_dir = root / "09 FASP"
+            state_norm = fasp_dir / "07 Tamaulipas Jackie" / "01 Normatividad estatal"
+            state_norm.mkdir(parents=True)
+            (state_norm / "ley.pdf").write_bytes(b"state")
+            source = root / "notebooklm"
+            missing = notebooklm_drive.validate_notebooklm_corpus(source, fasp_dir)
+            self.assertEqual(len(missing), 1)
+            self.assertEqual(missing[0]["state"], "07 Tamaulipas Jackie")
+            with self.assertRaisesRegex(RuntimeError, "preparar-notebooklm-por-estado"):
+                notebooklm_drive.assert_notebooklm_corpus_current(source, fasp_dir)
+
+    def test_notebooklm_drive_allows_when_state_sources_are_in_corpus(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fasp_dir = root / "09 FASP"
+            state_norm = fasp_dir / "07 Tamaulipas Jackie" / "01 Normatividad estatal"
+            notebook_norm = root / "notebooklm" / "07 Tamaulipas Jackie" / "02_Normativa_Estatal"
+            state_norm.mkdir(parents=True)
+            notebook_norm.mkdir(parents=True)
+            (state_norm / "ley.pdf").write_bytes(b"same")
+            (notebook_norm / "ley.pdf").write_bytes(b"same")
+            self.assertEqual(notebooklm_drive.validate_notebooklm_corpus(root / "notebooklm", fasp_dir), [])
+
     def test_notebooklm_drive_query_escapes_apostrophes(self):
         self.assertEqual(notebooklm_drive.quote_query_value("FASP's Folder"), "FASP\\'s Folder")
 
