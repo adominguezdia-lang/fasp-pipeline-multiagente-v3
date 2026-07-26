@@ -55,6 +55,13 @@ def safe_drive_id_prefix(file_name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def duplicate_keeper_key(path: Path) -> tuple[int, int, str]:
+    token = readable_token(path.stem, "-")
+    copy_penalty = 1 if re.search(r"(?:^|-)COPIA(?:-|$)", token) else 0
+    generated_version_penalty = 1 if re.search(r"_V1[1-9]$", path.stem, flags=re.IGNORECASE) else 0
+    return (copy_penalty + generated_version_penalty, len(path.name), path.name)
+
+
 def source_name_path(path: Path, previous_record: dict | None = None) -> Path:
     original_name = (previous_record or {}).get("original_name")
     return path.with_name(original_name) if original_name else path
@@ -136,10 +143,18 @@ def label_fragment(label: str) -> str:
     return readable_token(label, "-")[:56] or "CONTENIDO-SIN-TITULO"
 
 
+def append_content_label(base: str, label: str) -> str:
+    fragment = label_fragment(label)
+    base_tail = base.rsplit("-", 1)[-1]
+    if fragment in base or base_tail in fragment:
+        return base
+    return f"{base}_{fragment}"[:140].rstrip("_-")
+
+
 def human_target_name(path: Path, label: str, duplicate_index: int | None = None) -> str:
     base, version = base_name(path)
     if duplicate_index is not None:
-        base = f"{base}_{label_fragment(label)}"[:140].rstrip("_-")
+        base = append_content_label(base, label)
         version = f"V1{duplicate_index}"
     return f"{base}_{version}.pdf"
 
@@ -167,9 +182,19 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
         raise FileNotFoundError(f"Directorio no existe: {source}")
     previous = load_previous_records(source)
     drive_ids = snapshot_id_by_prefix(read_json(source.parents[1] / ".drive_snapshot.json", {"files": {}})) if len(source.parents) > 1 else {}
-    pending = []
+    pdfs_by_hash = {}
     for pdf in sorted(path for path in source.rglob("*") if path.is_file() and path.suffix.lower() == ".pdf"):
-        digest = sha256_file(pdf)
+        pdfs_by_hash.setdefault(sha256_file(pdf), []).append(pdf)
+    deduped_pdfs = []
+    for digest, pdfs in sorted(pdfs_by_hash.items(), key=lambda item: str(min(item[1], key=duplicate_keeper_key))):
+        keeper = min(pdfs, key=duplicate_keeper_key)
+        deduped_pdfs.append((digest, keeper))
+        for duplicate in pdfs:
+            if duplicate != keeper and not dry_run:
+                duplicate.unlink()
+
+    pending = []
+    for digest, pdf in deduped_pdfs:
         previous_record = previous.get(digest)
         if previous_record and pdf.name == previous_record.get("final_name"):
             previous_record = dict(previous_record)

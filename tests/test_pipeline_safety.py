@@ -102,6 +102,14 @@ class PipelineSafetyTests(unittest.TestCase):
         )
         self.assertEqual(name, "FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf")
 
+    def test_content_version_name_does_not_duplicate_content_label(self):
+        name = analyzer.human_target_name(
+            Path("01 EdoMex Nancy G/01 Normatividad estatal/FASP_2026_P1_MEX_DOC_DOCUMENTO_LA_INFORMACION_V1.0.pdf"),
+            "LA_INFORMACION",
+            duplicate_index=0,
+        )
+        self.assertEqual(name, "FASP_2026_P1_MEX_NOR-DOCUMENTO-LA-INFORMACION_V10.pdf")
+
     def test_content_version_overrides_wrong_scope_and_kind_from_state_folder(self):
         name = analyzer.human_target_name(
             Path("02 Hidalgo Diana/01 Normatividad estatal/FASP_2026_P1_EST_HID_REGLAMENTOSP_2024_V10.pdf"),
@@ -136,6 +144,21 @@ class PipelineSafetyTests(unittest.TestCase):
             manifest = analyzer.analyze(source, dry_run=True)
             self.assertEqual(manifest["files"][0]["final_name"], "FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf")
 
+    def test_content_version_ignores_exact_duplicate_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "07 Tamaulipas Jackie" / "01 Normatividad estatal"
+            source.mkdir(parents=True)
+            (source / "Ley.pdf").write_bytes(b"same")
+            (source / "Ley copia.pdf").write_bytes(b"same")
+            previous_extract = analyzer.extract_document
+            analyzer.extract_document = lambda path: {"text": "Ley Estatal de Planeacion\nArticulo 1", "title": "", "pages": 1}
+            try:
+                manifest = analyzer.analyze(source, dry_run=True)
+            finally:
+                analyzer.extract_document = previous_extract
+            self.assertEqual(manifest["total_pdfs"], 1)
+            self.assertEqual(manifest["files"][0]["final_name"], "FASP_2026_P1_TAM_NOR-LEY_V10.pdf")
+
     def test_normalize_filename_preserves_readable_version(self):
         name = renamer.normalize_filename("FASP_2026_P1_MEX_DOC-DOCUMENTO_Toluca de Lerdo México_V1.2.pdf")
         self.assertEqual(name, "FASP_2026_P1_MEX_DOC-DOCUMENTO_TOLUCA_DE_LERDO_MEXICO_V1.2.pdf")
@@ -153,6 +176,29 @@ class PipelineSafetyTests(unittest.TestCase):
                     {
                       "original_name": "FASP_2026_P1_MEX_DOC-DOCUMENTO_V1.0__drive-1aTqON0oonP9HOOv.pdf",
                       "final_name": "FASP_2026_P1_MEX_DOC_DOCUMENTO_LA-INFORMACION_V1.0.pdf"
+                    }
+                  ]
+                }
+                """,
+                encoding="utf-8",
+            )
+            updates = drive_rename.build_updates(root / "09 FASP", {"files": {file_id: {}}})
+            self.assertEqual(updates[0]["status"], "pendiente")
+            self.assertEqual(updates[0]["file_id"], file_id)
+
+    def test_drive_rename_resolves_uppercase_drive_suffix(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_dir = root / "09 FASP" / "01 EdoMex"
+            manifest_dir.mkdir(parents=True)
+            file_id = "1aTq-ON0oonP9HOOv2FF8zSVyXqr3JLFh"
+            (manifest_dir / "contenido_manifest.json").write_text(
+                """
+                {
+                  "files": [
+                    {
+                      "original_name": "documento_DRIVE-1aTqON0oonP9HOOv.pdf",
+                      "final_name": "FASP_2026_P1_MEX_NOR-DOCUMENTO_V10.pdf"
                     }
                   ]
                 }
@@ -193,6 +239,27 @@ class PipelineSafetyTests(unittest.TestCase):
         for item in updates:
             report["status_counts"][item["status"]] = report["status_counts"].get(item["status"], 0) + 1
         self.assertTrue(any(report["status_counts"].get(status, 0) for status in {"error", "sin_file_id", "file_id_no_resuelto"}))
+
+    def test_drive_rename_can_skip_local_only_files_explicitly(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest_dir = root / "09 FASP" / "01 EdoMex"
+            manifest_dir.mkdir(parents=True)
+            (manifest_dir / "contenido_manifest.json").write_text(
+                """
+                {
+                  "files": [
+                    {
+                      "original_name": "local.pdf",
+                      "final_name": "FASP_2026_P1_MEX_NOR-LOCAL_V10.pdf"
+                    }
+                  ]
+                }
+                """,
+                encoding="utf-8",
+            )
+            updates = drive_rename.build_updates(root / "09 FASP", {"files": {}}, skip_local_only=True)
+            self.assertEqual(updates[0]["status"], "omitido_sin_file_id")
 
     def test_excel_stage_includes_common_sources_for_state_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -552,6 +619,37 @@ class PipelineSafetyTests(unittest.TestCase):
             self.assertEqual(result["status"], "renombrar")
             self.assertEqual(result["drive_id"], "file-id")
             self.assertEqual(result["previous_name"], "viejo.pdf")
+
+    def test_notebooklm_drive_renames_one_sha_duplicate_without_crashing(self):
+        class Files:
+            def list(self, **kwargs):
+                query = kwargs["q"]
+
+                class Request:
+                    def execute(self_inner):
+                        if "name='nuevo.pdf'" in query:
+                            return {"files": []}
+                        return {"files": [
+                            {"id": "first-id", "name": "viejo-1.pdf", "appProperties": {"fasp_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}},
+                            {"id": "second-id", "name": "viejo-2.pdf", "appProperties": {"fasp_sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"}},
+                        ]}
+
+                return Request()
+
+        class Service:
+            def files(self):
+                return Files()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "notebooklm"
+            source.mkdir()
+            pdf = source / "nuevo.pdf"
+            pdf.write_bytes(b"hello")
+            result = notebooklm_drive.sync_file(Service(), pdf, source, "parent", dry_run=True)
+            self.assertEqual(result["status"], "renombrar_con_duplicados_sha")
+            self.assertEqual(result["duplicados_sha"], 2)
+            self.assertEqual(result["drive_id"], "first-id")
 
     def test_exceles_drive_manifest_is_not_uploaded_as_excel_source(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -97,7 +97,7 @@ def find_child(service, parent_id: str, name: str, mime_type: str | None = None)
     return files[0] if files else None
 
 
-def find_child_by_sha(service, parent_id: str, digest: str) -> dict | None:
+def find_children_by_sha(service, parent_id: str, digest: str) -> list[dict]:
     query = [
         f"'{quote_query_value(parent_id)}' in parents",
         f"appProperties has {{ key='fasp_sha256' and value='{quote_query_value(digest)}' }}",
@@ -110,10 +110,21 @@ def find_child_by_sha(service, parent_id: str, digest: str) -> dict | None:
         supportsAllDrives=True,
         includeItemsFromAllDrives=True,
     ).execute()
-    files = response.get("files", [])
+    return response.get("files", [])
+
+
+def find_child_by_sha(service, parent_id: str, digest: str) -> dict | None:
+    files = find_children_by_sha(service, parent_id, digest)
     if len(files) > 1:
         raise RuntimeError(f"Destino ambiguo en Drive: SHA {digest} tiene {len(files)} coincidencias en {parent_id}")
     return files[0] if files else None
+
+
+def preferred_sha_match(files: list[dict], target_name: str) -> dict:
+    exact = [item for item in files if item.get("name") == target_name]
+    if exact:
+        return sorted(exact, key=lambda item: item.get("id", ""))[0]
+    return sorted(files, key=lambda item: (len(item.get("name", "")), item.get("name", ""), item.get("id", "")))[0]
 
 
 def ensure_folder(service, parent_id: str, name: str, dry_run: bool) -> tuple[str, str]:
@@ -232,7 +243,39 @@ def sync_file(service, path: Path, source: Path, parent_id: str, dry_run: bool) 
         result.update({"status": "sin_cambios", "drive_id": existing["id"]})
         return result
 
-    existing_by_sha = None if dry_run and parent_id.startswith("dry-run:") else find_child_by_sha(service, parent_id, digest)
+    existing_by_sha_matches = [] if dry_run and parent_id.startswith("dry-run:") else find_children_by_sha(service, parent_id, digest)
+    if len(existing_by_sha_matches) > 1:
+        selected = preferred_sha_match(existing_by_sha_matches, path.name)
+        duplicate_data = {
+            "drive_id": selected["id"],
+            "duplicados_sha": len(existing_by_sha_matches),
+            "drive_ids": [item.get("id") for item in existing_by_sha_matches],
+        }
+        if selected.get("name") == path.name:
+            result.update({"status": "sin_cambios", **duplicate_data})
+            return result
+        if dry_run:
+            result.update({
+                "status": "renombrar_con_duplicados_sha",
+                "previous_name": selected.get("name"),
+                **duplicate_data,
+            })
+            return result
+        updated = service.files().update(
+            fileId=selected["id"],
+            body={"name": path.name, "appProperties": {"fasp_sha256": digest, "fasp_source": "notebooklm"}},
+            fields="id,name,appProperties",
+            supportsAllDrives=True,
+        ).execute()
+        result.update({
+            "status": "renombrado_con_duplicados_sha",
+            "drive_id": updated["id"],
+            "previous_name": selected.get("name"),
+            "duplicados_sha": len(existing_by_sha_matches),
+            "drive_ids": [item.get("id") for item in existing_by_sha_matches],
+        })
+        return result
+    existing_by_sha = existing_by_sha_matches[0] if existing_by_sha_matches else None
     if existing_by_sha and not existing:
         if dry_run:
             result.update({"status": "renombrar", "drive_id": existing_by_sha["id"], "previous_name": existing_by_sha.get("name")})
@@ -279,7 +322,16 @@ def novelty_candidates(actions: list[dict]) -> list[dict]:
     return [
         item for item in actions
         if item.get("type") == "file"
-        and item.get("status") in {"subir", "actualizar", "renombrar", "subido", "actualizado", "renombrado"}
+        and item.get("status") in {
+            "subir",
+            "actualizar",
+            "renombrar",
+            "renombrar_con_duplicados_sha",
+            "subido",
+            "actualizado",
+            "renombrado",
+            "renombrado_con_duplicados_sha",
+        }
         and Path(item.get("path", "")).suffix.lower() == ".pdf"
     ]
 
