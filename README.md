@@ -1,12 +1,14 @@
-# FASP Pipeline Multiagente V3
+# FASP Pipeline Multiagente V4
 
 Pipeline para sincronizar, normalizar, analizar y distribuir documentos FASP.
 
 ## Estado
 
-El pipeline está preparado para ejecuciones reproducibles. Cada estado se procesa en sus propias salidas; la carga a Drive se ejecuta como una operación global separada.
+V4 es la versión operativa vigente. El pipeline está preparado para ejecuciones reproducibles e incrementales. Cada estado se procesa en sus propias salidas; la publicación en Drive se ejecuta como operaciones separadas y trazables.
 
 El flujo es incremental: puede correrse durante varios días sobre la misma carpeta. Los archivos ya versionados se reconocen por su SHA y por `drive_file_id` en `contenido_manifest.json`; no deben re-versionarse como documentos nuevos.
+
+El comando histórico `scripts/etapa-8-sincronizar-drive` está obsoleto en V4. No debe usarse para publicar PDFs, Exceles ni corpus NotebookLM, porque no respeta el flujo actual basado en manifest, `fileId` y SHA.
 
 ## Requisitos
 
@@ -83,6 +85,22 @@ También puede integrarse al cierre del orquestador:
 python3 scripts/orquestador-sincronizacion --run --workers 3 --rename-drive
 ```
 
+## Recuperación de un estado incompleto
+
+Si una carpeta de estado en Drive conserva archivos sin renombrar o el Excel muestra menos documentos que Drive, no ejecutes `etapa-8`. Rebaselinea solo ese estado desde Drive y conserva la trazabilidad por `fileId`:
+
+```bash
+python3 scripts/sincronizar-carpeta-drive "07 Tamaulipas Jackie"
+python3 scripts/analizar-y-versionar-pdfs --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie"
+python3 scripts/actualizar-nombres-drive-desde-manifest --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie" --dry-run
+python3 scripts/actualizar-nombres-drive-desde-manifest --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie"
+python3 scripts/etapa-2-extraccion-exceles --source "$FASP_WORK_DIR/09 FASP/07 Tamaulipas Jackie"
+python3 scripts/sincronizar-exceles-drive --dry-run
+python3 scripts/sincronizar-exceles-drive
+```
+
+El `--dry-run` de renombrado debe terminar con `sin_cambios` después de aplicar. Si aparecen `sin_file_id` o `file_id_no_resuelto`, detén la actualización: el manifest no puede relacionar el archivo local con Drive.
+
 Para preparar carpetas locales de carga a NotebookLM Pro, genera un corpus por estado con bibliografía común, normativa federal común y normativa estatal:
 
 ```bash
@@ -117,6 +135,7 @@ python3 scripts/sincronizar-notebooklm-drive --run-label 2026-07-25
 ## Garantías operativas
 
 - La sincronización descarga archivos nuevos o modificados según su versión en Drive.
+- La publicación remota de V4 usa `actualizar-nombres-drive-desde-manifest`, `sincronizar-exceles-drive` y `sincronizar-notebooklm-drive`; `etapa-8` queda bloqueada por obsoleta.
 - Un choque de nombres normalizados conserva ambos PDFs; nunca elimina uno automáticamente.
 - Los manifests conservan `drive_file_id`; no se depende del nombre visible para actualizar Drive.
 - `sin_file_id` y `file_id_no_resuelto` son errores bloqueantes en el renombrado remoto.

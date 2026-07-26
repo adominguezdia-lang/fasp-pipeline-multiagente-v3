@@ -425,6 +425,14 @@ class PipelineSafetyTests(unittest.TestCase):
             self.assertEqual(result["status"], "sin_cambios")
             self.assertEqual(result["drive_id"], "file-id")
 
+    def test_legacy_etapa_8_is_blocked_in_v4(self):
+        result = run("etapa-8-sincronizar-drive", work_dir=Path(tempfile.gettempdir()))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("obsoleta", result.stderr)
+        self.assertIn("actualizar-nombres-drive-desde-manifest", result.stderr)
+        self.assertIn("sincronizar-exceles-drive", result.stderr)
+        self.assertIn("sincronizar-notebooklm-drive", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
