@@ -55,6 +55,11 @@ def safe_drive_id_prefix(file_name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def source_name_path(path: Path, previous_record: dict | None = None) -> Path:
+    original_name = (previous_record or {}).get("original_name")
+    return path.with_name(original_name) if original_name else path
+
+
 def snapshot_id_by_prefix(snapshot: dict) -> dict[str, str]:
     candidates = {}
     for file_id in snapshot.get("files", {}):
@@ -106,18 +111,20 @@ def base_name(path: Path) -> tuple[str, str]:
     version_match = VERSION_PATTERN.search(stem)
     version = normalize_version(version_match.group(0) if version_match else None)
     stem_without_version = VERSION_PATTERN.sub("", stem)
+    path_scope = state_code_from_path(path)
+    path_kind = kind_from_path(path)
     canonical = CANONICAL_PREFIX_PATTERN.match(readable_token(stem_without_version, "_"))
     if canonical:
         year = canonical.group("year")
         period = canonical.group("period")
-        scope = canonical.group("scope").upper()
-        kind = canonical.group("kind").upper()
+        scope = path_scope if path_scope != "NAL" else canonical.group("scope").upper()
+        kind = path_kind if path_kind != "DOC" else canonical.group("kind").upper()
         description = readable_token(canonical.group("description"), "-")
     else:
         year = "2026"
         period = "1"
-        scope = state_code_from_path(path)
-        kind = kind_from_path(path)
+        scope = path_scope
+        kind = path_kind
         description = readable_token(strip_legacy_prefix(stem_without_version), "-")
     if not description:
         description = "DOCUMENTO"
@@ -166,20 +173,31 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
         previous_record = previous.get(digest)
         if previous_record and pdf.name == previous_record.get("final_name"):
             previous_record = dict(previous_record)
-            canonical_name = human_target_name(pdf, previous_record.get("identificador_contenido", "CONTENIDO_SIN_TITULO"))
+            naming_source = source_name_path(pdf, previous_record)
+            canonical_name = human_target_name(naming_source, previous_record.get("identificador_contenido", "CONTENIDO_SIN_TITULO"))
             previous_record["status"] = "sin_cambios" if pdf.name == canonical_name else "requiere_renombrado"
             pending.append({
                 "path": pdf,
+                "naming_source": naming_source,
                 "document": {"title": previous_record.get("titulo_pdf", ""), "pages": previous_record.get("paginas", 0)},
                 "label": previous_record.get("identificador_contenido", "CONTENIDO_SIN_TITULO"),
                 "sha256": digest,
-                "base": base_name(pdf)[0],
+                "base": base_name(naming_source)[0],
                 "previous_record": previous_record,
             })
             continue
         document = extract_document(pdf)
         label = content_label(document["text"], document["title"])
-        pending.append({"path": pdf, "document": document, "label": label, "sha256": digest, "base": base_name(pdf)[0], "previous_record": previous_record})
+        naming_source = source_name_path(pdf, previous_record)
+        pending.append({
+            "path": pdf,
+            "naming_source": naming_source,
+            "document": document,
+            "label": label,
+            "sha256": digest,
+            "base": base_name(naming_source)[0],
+            "previous_record": previous_record,
+        })
 
     groups = {}
     for item in pending:
@@ -192,7 +210,7 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
         ordered = sorted(group, key=lambda item: (label_fragment(item["label"]), item["sha256"], str(item["path"])))
         for duplicate_index, item in enumerate(ordered):
             pdf = item["path"]
-            destination = pdf.with_name(human_target_name(pdf, item["label"], duplicate_index if requires_content_version else None))
+            destination = pdf.with_name(human_target_name(item["naming_source"], item["label"], duplicate_index if requires_content_version else None))
             suffix = 2
             while destination in used_destinations or (destination.exists() and destination != pdf and sha256_file(destination) != item["sha256"]):
                 stem = destination.stem
@@ -215,7 +233,7 @@ def analyze(source: Path, dry_run: bool = False) -> dict:
                 "original_name": previous_record.get("original_name") or pdf.name,
                 "final_name": final_path.name,
                 "identificador_contenido": item["label"],
-                "version_contenido": f"V1.{duplicate_index}" if requires_content_version else base_name(pdf)[1],
+                "version_contenido": f"V1{duplicate_index}" if requires_content_version else base_name(item["naming_source"])[1],
                 "titulo_pdf": item["document"]["title"],
                 "paginas": item["document"]["pages"],
                 "sha256": item["sha256"],

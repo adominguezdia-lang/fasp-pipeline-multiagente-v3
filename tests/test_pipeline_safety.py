@@ -102,6 +102,13 @@ class PipelineSafetyTests(unittest.TestCase):
         )
         self.assertEqual(name, "FASP_2026_P1_TAM_NOR-LEY-ESTATAL-DE-PLANEACION_V10.pdf")
 
+    def test_content_version_overrides_wrong_scope_and_kind_from_state_folder(self):
+        name = analyzer.human_target_name(
+            Path("02 Hidalgo Diana/01 Normatividad estatal/FASP_2026_P1_EST_HID_REGLAMENTOSP_2024_V10.pdf"),
+            "Reglamento",
+        )
+        self.assertEqual(name, "FASP_2026_P1_HID_NOR-REGLAMENTOSP-2024_V10.pdf")
+
     def test_content_version_rewrites_previous_legacy_final_name(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "07 Tamaulipas Jackie" / "01 Normatividad estatal"
