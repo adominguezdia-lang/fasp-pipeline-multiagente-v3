@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Carga todos los PDFs del corpus NotebookLM en una carpeta de ejecucion."""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import json
+from datetime import datetime
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+from pipeline_common import read_json, work_dir, write_json
+
+
+WORK_DIR = work_dir()
+SCRIPTS_DIR = Path(__file__).resolve().parent
+
+
+def load_notebooklm_drive():
+    spec = importlib.util.spec_from_loader(
+        "sincronizar_notebooklm_drive",
+        SourceFileLoader("sincronizar_notebooklm_drive", str(SCRIPTS_DIR / "sincronizar-notebooklm-drive")),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def default_run_label(source: Path) -> str:
+    manifest = read_json(source / "notebooklm_drive_manifest.json", {})
+    label = manifest.get("novedades_run_label")
+    if label:
+        return label
+    return datetime.now().strftime("%Y-%m-%d_%H%M%S")
+
+
+def pdf_records(source: Path) -> list[dict]:
+    records = []
+    for path in sorted(source.rglob("*.pdf")):
+        if path.is_file():
+            records.append({"type": "file", "path": str(path.relative_to(source)), "name": path.name})
+    return records
+
+
+def sync_complete_run(
+    service,
+    module,
+    source: Path,
+    parent_id: str,
+    novedades_root_name: str,
+    run_label: str,
+    dry_run: bool,
+) -> dict:
+    candidates = pdf_records(source)
+    root_id, root_status = module.ensure_folder(service, parent_id, novedades_root_name, dry_run)
+    run_id, run_status = module.ensure_folder(service, root_id, run_label, dry_run)
+    folder_ids, actions = module.build_needed_folder_map(service, source, run_id, candidates, dry_run)
+    actions.insert(0, {"type": "folder", "path": ".", "status": f"paquete_{root_status}", "drive_id": root_id, "name": novedades_root_name})
+    actions.insert(1, {"type": "folder", "path": run_label, "status": f"paquete_{run_status}", "drive_id": run_id, "name": run_label})
+    for candidate in candidates:
+        path = source / candidate["path"]
+        parent_relative = Path(candidate["path"]).parent
+        item = module.sync_file(service, path, source, folder_ids[parent_relative], dry_run)
+        item["status"] = f"paquete_{item['status']}"
+        actions.append(item)
+
+    report = {
+        "timestamp": datetime.now().isoformat(),
+        "dry_run": dry_run,
+        "source": str(source),
+        "novedades_root_name": novedades_root_name,
+        "novedades_run_label": run_label,
+        "drive_parent_id": parent_id,
+        "total_pdfs": len(candidates),
+        "status_counts": {},
+        "items": actions,
+    }
+    for item in actions:
+        report["status_counts"][item["status"]] = report["status_counts"].get(item["status"], 0) + 1
+    report["links"] = module.report_links({
+        "novedades_run_label": run_label,
+        "items": [
+            {"type": "folder", "path": ".", "status": "novedad_existente", "drive_id": root_id, "name": novedades_root_name},
+            {"type": "folder", "path": run_label, "status": "novedad_existente", "drive_id": run_id, "name": run_label},
+        ],
+    })
+    return report
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Carga todos los PDFs del corpus en una carpeta de ejecucion NotebookLM.")
+    parser.add_argument("--source", type=Path, default=WORK_DIR / "notebooklm")
+    parser.add_argument("--novedades-root-name", default="FASP_NBLM_NOVEDADES")
+    parser.add_argument("--run-label")
+    parser.add_argument("--parent-id", default="root", help="Carpeta padre en Drive; por defecto, Mi unidad.")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+
+    if not args.source.exists():
+        raise FileNotFoundError(f"No existe el corpus NotebookLM local: {args.source}")
+    run_label = args.run_label or default_run_label(args.source)
+    module = load_notebooklm_drive()
+    module.assert_notebooklm_corpus_current(args.source)
+    service = module.authenticate_drive()
+    report = sync_complete_run(
+        service,
+        module,
+        args.source,
+        args.parent_id,
+        args.novedades_root_name,
+        run_label,
+        args.dry_run,
+    )
+    suffix = "dry_run" if args.dry_run else "aplicado"
+    write_json(WORK_DIR / "logs" / f"notebooklm_paquete_completo_{suffix}_{datetime.now():%Y%m%d_%H%M%S}.json", report)
+    print(json.dumps({
+        "total_pdfs": report["total_pdfs"],
+        "status_counts": report["status_counts"],
+        "links": report["links"],
+    }, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
